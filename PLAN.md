@@ -41,18 +41,28 @@ A self-contained system that runs a local coding agent 24/7 on a single GPU, giv
 
 ## 3. Autonomous Agent Engine
 
-### 3.1 Why Not Existing Frameworks?
+### 3.1 Agent System Options (Research Results)
 
-| System        | Verdict   | Why                                                  |
-|---------------|-----------|------------------------------------------------------|
-| Aider         | Partial   | Great code editing but no autonomous loop mode. No context auto-management. Needs human prompts. |
-| OpenHands     | Too heavy | Full web UI + Docker sandbox. Overkill. Designed for cloud models. |
-| SWE-agent     | Too narrow| One-issue-at-a-time. No continuous operation.        |
-| Cline         | IDE-bound | Needs VS Code. No headless/terminal mode.            |
-| CrewAI        | Overkill  | Multi-agent framework. We need one agent, minimal overhead. |
-| LangGraph     | Overkill  | General orchestration. Too much abstraction for a single coding agent. |
+| System        | Verdict   | Context Mgmt | Autonomous? | Weight   | Notes                                         |
+|---------------|-----------|--------------|-------------|----------|-----------------------------------------------|
+| **OpenCode**  | ✅ Top pick | Auto-compact (built-in) + todo preservation across resets | Yes, sub-agents + multi-agent workflows | Go binary, minimal | Proven with llama.cpp + Qwen3.5-35B-A3B at 262K ctx. `--provider openai-compatible`. Has `compaction-todo-preserver` hook. |
+| Aider         | Fallback  | Tree-sitter repo map (token budget), no auto-summarize | No autonomous loop | Python, light | Best as executor inside a custom loop. `--openai-api-base` for local. |
+| Goose         | Partial   | Session-based, no built-in compaction | Task mode for longer runs | Rust binary | Needs external context management. |
+| OpenHands     | Too heavy | RAG over history (32K default) | Multi-agent delegation | Docker + web UI | Overkill for single local agent. |
+| SWE-agent     | Too narrow| ACI + collapsing old observations | Issue-driven, not continuous | Python | Single-issue resolver, not 24/7 builder. |
 
-**Decision: Build a lightweight custom orchestrator.** Our model (28B MoE, 3B active) excels at coding but isn't GPT-4 level. Every token of overhead system prompt costs us quality. A custom loop keeps it lean and gives us full control over context management.
+**Decision: Use OpenCode as the agent runner** with its built-in auto-compact and todo preservation. Wrap it with a thin Python orchestrator for:
+- Goal injection (read goal from file, send to OpenCode)
+- Monitoring integration (parse OpenCode output, feed to dashboard)
+- Brick wall detection (parse errors, pause after N retries)
+- Restart on context reset (OpenCode handles the reset internally)
+
+**Fallback:** If OpenCode's tool calling doesn't work well with our 28B model, build a custom Python loop (~200 lines) using the STATE.md pattern:
+1. Agent maintains `STATE.md` in the repo
+2. After each work chunk: update checkpoint (done/next/blockers)
+3. Before context compaction: summarize into STATE.md
+4. After context reset: agent reads STATE.md and continues
+5. Todo lists survive compaction
 
 ### 3.2 The Agent Loop
 
@@ -234,25 +244,37 @@ The agent pauses and requests human intervention when:
 - The model's expert weights live in system RAM (MoE offloading)
 - Larger models need more RAM to hold expert weights
 
-### Candidate Models (investigate next)
+### Candidate Models (Research Results)
 
-| Model                              | Total | Active | Q4_K_M Size | Feasible? | Notes                                     |
-|------------------------------------|-------|--------|-------------|-----------|-------------------------------------------|
-| Qwen3.5-35B-A3B (current family)   | 35B   | 3B     | ~18GB       | ✓ Running | Same arch, possibly better trained         |
-| Qwen-AgentWorld-35B-A3B            | 35B   | 3B     | ~18GB       | ✓ Worth testing | Agent-optimized variant from Unsloth   |
-| Qwen3.6-27B (dense)                | 27B   | 27B    | ~15GB       | ✓ Tight   | Dense model, all params active, fast decode |
-| Qwen3.5-14B                        | 14B   | 14B    | ~8GB        | ✓ Fast    | Dense, fits entirely in VRAM, very fast    |
-| Llama 4 Scout                      | 109B  | 17B    | ~60GB       | ✗ Too big | Needs 60GB+ RAM for experts                |
-| DeepSeek-V4-Flash                  | 284B  | 13B    | ~170GB      | ✗ Too big | Needs 170GB+ RAM                           |
-| Qwen3-235B-A22B                    | 235B  | 22B    | ~130GB      | ✗ Too big | Way beyond our RAM                         |
-| Qwen3.5-7B-A1B (if exists)         | ~7B   | ~1B    | ~4GB        | ✓ Ultra fast | Tiny MoE, fits fully in VRAM              |
-| GLM-4.7-Flash-REAP-23B-A3B         | 23B   | 3B     | ~13GB       | ✓ Good fit | Video creator recommended, smaller than current |
+#### Tier 1 — Proven / Drop-in Upgrade (3B active, same arch)
 
-### Realistic Next Steps
-1. **Qwen-AgentWorld-35B-A3B** — Same architecture, agent-optimized. Drop-in replacement.
-2. **GLM-4.7-Flash-REAP-23B-A3B** — Smaller, faster, recommended by the video creator.
-3. **Qwen3.6-27B (dense)** — All 27B params active. Better quality but needs full VRAM.
-4. **Upgrade system RAM to 64GB** — Would unlock Llama 4 Scout (109B/17B active).
+| Model                         | Total | Active | Q4_K_M Size | TurboQuant? | Notes                                     |
+|-------------------------------|-------|--------|-------------|-------------|-------------------------------------------|
+| **Qwen3.6-35B-A3B** (full)    | 35B   | 3B     | ~22GB       | ✅ UD-Q4_K_M + TQ3 | **Best upgrade path.** Full experts (no REAP pruning loss). Same arch. MTP speculative decoding support. Community reports 70 t/s on RTX 5080 with turbo3 + auto-fit. |
+| **Qwen3.5-35B-A3B**           | 35B   | 3B     | ~22GB       | ✅ UD-Q4_K_M + TQ3 | Previous gen, same arch. Proven with turboquant + auto-fit. |
+| **GLM-4.7-Flash-REAP-23B-A3B**| 23B   | 3B     | ~10GB       | ✗ No TQ variant | Fits entirely in VRAM! Video creator recommended. Different architecture. |
+
+#### Tier 2 — Stretch Goals (More active params)
+
+| Model                         | Total | Active | Q4_K_M Size | Notes                                     |
+|-------------------------------|-------|--------|-------------|-------------------------------------------|
+| **Qwen3.5-122B-A10B**         | 122B  | 10B    | ~74GB       | ⚠️ Marginal. 10B active = 3x more compute. Attention alone needs 12-14GB. Reddit: "rarely beat 27B TG speeds." |
+| **Qwen-AgentWorld-35B-A3B**   | 35B   | 3B     | ~22GB       | Agent-optimized variant from Unsloth. Worth testing. |
+
+#### Tier 3 — Too Large (128GB+ RAM needed)
+
+| Model                         | Total | Active | Q4_K_M Size | Notes                                     |
+|-------------------------------|-------|--------|-------------|-------------------------------------------|
+| DeepSeek-V4-Flash             | 284B  | 13B    | ~180GB      | Needs 2×48GB minimum                      |
+| Qwen3.5-397B-A17B             | 397B  | 17B    | ~216GB      | Needs 128GB+ unified memory               |
+| Llama 4 Scout                 | 109B  | 17B    | ~60GB       | Needs 64GB+ RAM                           |
+
+### Key Findings
+1. **3B active param sweet spot is real** — attention layers fit in 16GB VRAM while expert weights live in RAM. Going to 10B+ active breaks this balance.
+2. **Qwen3.6-35B-A3B (full, non-REAP) is the clear next step** — 22GB, same arch, same flags, better quality experts.
+3. **REAP pruning at scale doesn't help 16GB VRAM** — reduces total params but active params stay same. A 504B model still needs 200GB+ even at Q2.
+4. **TurboQuant GGUF variants exist primarily for Qwen 3.5/3.6 models** — DeepSeek/MiniMax/GLM lack dedicated TQ builds.
+5. **64GB system RAM upgrade** would unlock Llama 4 Scout (109B/17B active) — worth considering.
 
 ---
 
