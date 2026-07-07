@@ -1,0 +1,28 @@
+# CodeDB ignore — keep src/ + docs indexed, exclude runtime/generated artifacts.
+# (codedb uses .codedbignore the same way as .gitignore: matched paths are skipped.)
+
+# Runtime data
+data/
+*.db
+*.sqlite
+
+# Virtualenvs & caches
+venv/
+.venv/
+__pycache__/
+
+# VCS & tooling
+.git/
+.zcode/
+codedb.snapshot
+
+# Large binaries (never index)
+*.gguf
+*.bin
+*.pt
+*.onnx
+
+# Built docs (regenerated, large)
+site/
+dist/
+build/

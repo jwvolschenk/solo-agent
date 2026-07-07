@@ -23,18 +23,20 @@ Context: 262,144 tokens
 ```
 
 ## What to Build
-Read PLAN.md for the full architecture. In short:
-1. FastAPI backend polling llama-server metrics
-2. HTML dashboard with Chart.js charts
-3. State file reader (tasks.md, journal.md parser)
-4. Agent activity API (optional POST endpoint)
-5. Docker container
+Read PLAN.md for the full architecture. The system has three subsystems:
+1. **Monitoring dashboard** — FastAPI backend polling llama-server metrics, HTML dashboard with Chart.js, state file reader, agent activity API.
+2. **Directive queue** — human→agent feedback via directives.md (full lifecycle).
+3. **Ralph orchestrator** — autonomous 24/7 self-improvement loop driving OpenCode.
+
+All three run in one FastAPI process on :8090. See README.md for the full API reference.
 
 ## Files
-- `PLAN.md` — full architecture and implementation plan
+- `README.md` — overview, quickstart, API reference, agent-integration contracts
+- `PLAN.md` — full architecture and implementation plan (incl. §10 directives, §11 orchestrator)
 - `COLDSTART.md` — this file
-- `src/` — all source code (to be created)
-- `docker-compose.yml` — deployment (to be created)
+- `src/` — all source code
+- `tests/` — pytest suite (61 tests)
+- `docker-compose.yml` / `Dockerfile` — deployment
 
 ## Code Repo
 `~/repos/solo-agent/` — cloned from `git@github.com:jwvolschenk/solo-agent.git`

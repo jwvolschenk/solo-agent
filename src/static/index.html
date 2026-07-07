@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solo Agent Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class', theme: { extend: {
+      colors: { brand: { 500: '#6366f1', 600: '#4f46e5' } },
+      fontFamily: { mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'] }
+    }}}
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { background: #0a0a0f; }
+    .card { background: #13131a; border: 1px solid #23232e; }
+    .pulse-dot { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .log-line { border-left: 2px solid #2a2a36; }
+    .log-line.file { border-color: #3b82f6; }
+    .log-line.tool { border-color: #a855f7; }
+    .log-line.error { border-color: #ef4444; }
+    .log-line.task { border-color: #22c55e; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #2a2a36; border-radius: 4px; }
+  </style>
+</head>
+<body class="text-gray-200 min-h-screen font-sans">
+<div id="app" class="max-w-[1600px] mx-auto p-4 space-y-4">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <h1 class="text-xl font-bold tracking-tight">SOLO AGENT MONITOR</h1>
+      <span id="modelBadge" class="text-xs text-gray-500 mono"></span>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="healthDot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
+      <span id="healthText" class="text-sm font-medium">connecting…</span>
+    </div>
+  </header>
+
+  <!-- Top grid: perf + context/server + current task -->
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+    <!-- Performance charts -->
+    <section class="card rounded-lg p-4 lg:col-span-5 space-y-3">
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Performance</h2>
+      <div>
+        <div class="flex justify-between text-xs text-gray-500 mb-1">
+          <span>Prefill t/s</span><span id="prefillVal" class="mono text-gray-300">—</span>
+        </div>
+        <div class="h-20"><canvas id="prefillChart"></canvas></div>
+      </div>
+      <div>
+        <div class="flex justify-between text-xs text-gray-500 mb-1">
+          <span>Decode t/s</span><span id="decodeVal" class="mono text-gray-300">—</span>
+        </div>
+        <div class="h-20"><canvas id="decodeChart"></canvas></div>
+      </div>
+    </section>
+
+    <!-- Server info -->
+    <section class="card rounded-lg p-4 lg:col-span-3 space-y-2">
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Server</h2>
+      <dl class="text-sm space-y-1.5">
+        <div class="flex justify-between"><dt class="text-gray-500">Uptime</dt><dd id="uptime" class="mono">—</dd></div>
+        <div class="flex justify-between"><dt class="text-gray-500">Context</dt><dd id="ctxSize" class="mono">—</dd></div>
+        <div class="flex justify-between"><dt class="text-gray-500">Slots</dt><dd id="slotsInfo" class="mono">—</dd></div>
+        <div class="flex justify-between"><dt class="text-gray-500">Queue</dt><dd id="queueInfo" class="mono">—</dd></div>
+        <div class="flex justify-between"><dt class="text-gray-500">Tokens</dt><dd id="totalTokens" class="mono">—</dd></div>
+      </dl>
+      <div class="pt-2 mt-2 border-t border-[#23232e]">
+        <div class="flex justify-between text-xs text-gray-500 mb-1">
+          <span>Context usage</span><span id="ctxPct" class="mono">—</span>
+        </div>
+        <div class="h-2 bg-[#23232e] rounded-full overflow-hidden">
+          <div id="ctxBar" class="h-full bg-brand-500 transition-all" style="width:0%"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Current task + orchestrator -->
+    <section class="card rounded-lg p-4 lg:col-span-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Orchestrator</h2>
+        <div class="flex items-center gap-1.5">
+          <span id="orchDot" class="w-2 h-2 rounded-full bg-gray-600"></span>
+          <span id="orchPhase" class="text-xs mono text-gray-400">idle</span>
+        </div>
+      </div>
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div><div id="orchCycle" class="text-lg font-bold mono">0</div><div class="text-[10px] text-gray-500 uppercase">cycle</div></div>
+        <div><div id="orchPassed" class="text-lg font-bold mono text-green-400">0</div><div class="text-[10px] text-gray-500 uppercase">passed</div></div>
+        <div><div id="orchTokens" class="text-lg font-bold mono">0</div><div class="text-[10px] text-gray-500 uppercase">tokens</div></div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-500 mb-1">Current task</div>
+        <div id="currentTask" class="text-sm text-gray-300 min-h-[2.5rem]">—</div>
+      </div>
+      <div class="flex gap-2 pt-1">
+        <button id="btnStart" class="flex-1 px-3 py-1.5 text-xs rounded bg-green-600 hover:bg-green-500 text-white font-medium">Start</button>
+        <button id="btnPause" class="flex-1 px-3 py-1.5 text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white font-medium">Pause</button>
+        <button id="btnStop" class="flex-1 px-3 py-1.5 text-xs rounded bg-red-600 hover:bg-red-500 text-white font-medium">Stop</button>
+      </div>
+      <div id="orchError" class="text-xs text-red-400 hidden"></div>
+    </section>
+  </div>
+
+  <!-- Lower grid: activity + directives + journal -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+    <!-- Activity feed -->
+    <section class="card rounded-lg p-4">
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Recent Activity</h2>
+      <div id="activityFeed" class="space-y-1.5 text-xs max-h-80 overflow-y-auto">
+        <div class="text-gray-600">no activity yet</div>
+      </div>
+    </section>
+
+    <!-- Directives -->
+    <section class="card rounded-lg p-4">
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Directives</h2>
+      <div class="flex gap-2 mb-3">
+        <select id="dirPriority" class="text-xs bg-[#1a1a22] border border-[#23232e] rounded px-1.5 py-1">
+          <option value="normal">normal</option>
+          <option value="high">high</option>
+          <option value="low">low</option>
+        </select>
+        <input id="dirInput" placeholder="Queue guidance for the agent…" maxlength="500"
+          class="flex-1 text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500" />
+        <button id="dirSend" class="px-3 py-1 text-xs rounded bg-brand-600 hover:bg-brand-500 text-white font-medium">Send</button>
+      </div>
+      <div id="directiveList" class="space-y-2 max-h-72 overflow-y-auto">
+        <div class="text-gray-600 text-xs">no directives queued</div>
+      </div>
+    </section>
+
+    <!-- Journal -->
+    <section class="card rounded-lg p-4">
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Journal</h2>
+      <div id="journalFeed" class="space-y-1.5 text-xs max-h-80 overflow-y-auto">
+        <div class="text-gray-600">no journal entries</div>
+      </div>
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Tasks</h2>
+      <div id="taskList" class="space-y-1 text-xs max-h-40 overflow-y-auto">
+        <div class="text-gray-600">no tasks</div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Cycle history -->
+  <section class="card rounded-lg p-4">
+    <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Cycle History</h2>
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead class="text-gray-500 border-b border-[#23232e]">
+          <tr>
+            <th class="text-left py-1.5 px-2">#</th>
+            <th class="text-left py-1.5 px-2">Outcome</th>
+            <th class="text-left py-1.5 px-2">Tasks</th>
+            <th class="text-left py-1.5 px-2">Lines</th>
+            <th class="text-left py-1.5 px-2">Tokens</th>
+            <th class="text-left py-1.5 px-2">Started</th>
+            <th class="text-left py-1.5 px-2">Summary</th>
+          </tr>
+        </thead>
+        <tbody id="cycleTable" class="mono">
+          <tr><td colspan="7" class="py-3 text-center text-gray-600">no cycles yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="text-center text-xs text-gray-600 py-2">
+    Solo Agent v0.1 · <span id="wsStatus">disconnected</span>
+  </footer>
+</div>
+
+<script>
+// ============================================================================
+// State + helpers
+// ============================================================================
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n == null ? '—' : (typeof n === 'number' ? n.toLocaleString() : n);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// ============================================================================
+// Charts (Chart.js sparklines, 60-point rolling windows)
+// ============================================================================
+function makeSparkline(ctx, color) {
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [{ data: [], borderColor: color, backgroundColor: color+'22', borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: true }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: { x: { display: false }, y: { display: false } },
+    }
+  });
+}
+const prefillChart = makeSparkline($('prefillChart').getContext('2d'), '#6366f1');
+const decodeChart  = makeSparkline($('decodeChart').getContext('2d'), '#22d3ee');
+const MAX_POINTS = 60;
+function pushPoint(chart, val) {
+  chart.data.labels.push('');
+  chart.data.datasets[0].data.push(val || 0);
+  if (chart.data.labels.length > MAX_POINTS) {
+    chart.data.labels.shift();
+    chart.data.datasets[0].data.shift();
+  }
+  chart.update('none');
+}
+
+// ============================================================================
+// WebSocket (primary) with REST polling fallback
+// ============================================================================
+let ws = null;
+let pollTimer = null;
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => { $('wsStatus').textContent = 'connected'; stopPolling(); };
+  ws.onmessage = (ev) => {
+    try { handleSnapshot(JSON.parse(ev.data)); } catch (e) { /* ignore */ }
+  };
+  ws.onclose = () => {
+    $('wsStatus').textContent = 'disconnected — polling';
+    startPolling();
+    setTimeout(connectWS, 3000); // auto-reconnect
+  };
+  ws.onerror = () => ws.close();
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(pollAll, 2000);
+  pollAll();
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+async function getJSON(path) {
+  try {
+    const r = await fetch(path);
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+async function pollAll() {
+  const [health, metrics, slots, orch, activity, directives, state] = await Promise.all([
+    getJSON('/api/health'), getJSON('/api/metrics'), getJSON('/api/slots'),
+    getJSON('/api/orchestrator/state'), getJSON('/api/agent/activity?limit=30'),
+    getJSON('/api/agent/directives'),
+    getJSON('/api/state/tasks'),
+  ]);
+  if (health) renderHealth(health);
+  if (metrics?.metrics) renderMetrics(metrics.metrics);
+  if (slots) renderSlots(slots.slots || []);
+  if (orch) renderOrchestrator(orch);
+  if (activity) renderActivity(activity.events || []);
+  if (directives) renderDirectives(directives.directives || []);
+  if (state) renderTasks(state.tasks || []);
+}
+
+function handleSnapshot(snap) {
+  if (snap.health) renderHealth(snap.health);
+  if (snap.metrics) renderMetrics(snap.metrics);
+  if (snap.slots) renderSlots(snap.slots);
+}
+
+// ============================================================================
+// Renderers
+// ============================================================================
+function renderHealth(h) {
+  const dot = $('healthDot'), txt = $('healthText');
+  const colors = { ok: 'bg-green-500', loading: 'bg-yellow-500 pulse-dot', error: 'bg-red-500', offline: 'bg-gray-600', no_slot_available: 'bg-orange-500' };
+  const labels = { ok: 'HEALTHY', loading: 'LOADING', error: 'ERROR', offline: 'OFFLINE', no_slot_available: 'NO SLOT' };
+  dot.className = `w-2.5 h-2.5 rounded-full ${colors[h.status] || 'bg-gray-600'}`;
+  txt.textContent = labels[h.status] || h.status;
+}
+
+function renderMetrics(m) {
+  const pre = m.prompt_tokens_seconds, dec = m.predicted_tokens_seconds;
+  $('prefillVal').textContent = pre != null ? pre.toFixed(1) : '—';
+  $('decodeVal').textContent = dec != null ? dec.toFixed(1) : '—';
+  pushPoint(prefillChart, pre);
+  pushPoint(decodeChart, dec);
+  $('totalTokens').textContent = fmt((m.prompt_tokens_total || 0) + (m.tokens_predicted_total || 0));
+  $('queueInfo').textContent = `${m.requests_processing ?? 0} proc / ${m.requests_deferred ?? 0} queue`;
+}
+
+function renderSlots(slots) {
+  if (!slots.length) { $('slotsInfo').textContent = '—'; return; }
+  const total = slots.length;
+  const busy = slots.filter(s => s.is_processing).length;
+  $('slotsInfo').textContent = `${total - busy}/${total} idle`;
+  // context usage from the first slot's n_ctx vs n_tokens_max if we had it
+  const nctx = slots[0]?.n_ctx;
+  if (nctx) $('ctxSize').textContent = fmt(nctx);
+}
+
+function renderOrchestrator(o) {
+  const phases = { idle: 'bg-gray-500', reflect: 'bg-blue-500 pulse-dot', plan: 'bg-cyan-500 pulse-dot', execute: 'bg-purple-500 pulse-dot', verify: 'bg-yellow-500 pulse-dot', record: 'bg-green-500', paused: 'bg-orange-500', stopped: 'bg-gray-600', error: 'bg-red-500' };
+  $('orchDot').className = `w-2 h-2 rounded-full ${phases[o.phase] || 'bg-gray-600'}`;
+  $('orchPhase').textContent = o.phase;
+  $('orchCycle').textContent = o.cycle_number || 0;
+  $('orchTokens').textContent = fmt(o.cycle_tokens_used || 0);
+  $('currentTask').textContent = o.current_task || '—';
+  $('orchPassed').textContent = o.last_outcome === 'passed' ? '✓' : (o.last_outcome || '—');
+  const errEl = $('orchError');
+  if (o.last_error) { errEl.textContent = o.last_error; errEl.classList.remove('hidden'); }
+  else { errEl.classList.add('hidden'); }
+}
+
+function renderActivity(events) {
+  if (!events.length) return;
+  $('activityFeed').innerHTML = events.map(e => {
+    const t = new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    return `<div class="log-line ${e.type} pl-2 py-0.5"><span class="text-gray-600 mono">${t}</span> <span class="text-gray-300">${esc(e.message)}</span></div>`;
+  }).join('');
+}
+
+function renderDirectives(dirs) {
+  if (!dirs.length) { $('directiveList').innerHTML = '<div class="text-gray-600 text-xs">no directives queued</div>'; return; }
+  const badges = { pending: 'bg-yellow-900 text-yellow-300', acknowledged: 'bg-blue-900 text-blue-300', done: 'bg-green-900 text-green-300' };
+  const prio = { high: 'text-red-400', normal: 'text-gray-400', low: 'text-gray-600' };
+  $('directiveList').innerHTML = dirs.map(d => `
+    <div class="border border-[#23232e] rounded p-2">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-xs mono ${prio[d.priority]||''}">${d.id} · ${d.priority}</span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded ${badges[d.status]||''}">${d.status}</span>
+      </div>
+      <div class="text-xs text-gray-300">${esc(d.text)}</div>
+    </div>`).join('');
+}
+
+function renderTasks(tasks) {
+  if (!tasks.length) return;
+  const marks = { done: '✓', todo: '○', in_progress: '◐', blocked: '✗' };
+  const colors = { done: 'text-green-400', todo: 'text-gray-500', in_progress: 'text-blue-400', blocked: 'text-red-400' };
+  $('taskList').innerHTML = tasks.map(t => `<div class="${colors[t.status]||''}"><span class="mono">${marks[t.status]||'○'}</span> ${esc(t.text)}</div>`).join('');
+}
+
+// ============================================================================
+// Actions
+// ============================================================================
+$('dirSend').onclick = async () => {
+  const text = $('dirInput').value.trim();
+  if (!text) return;
+  await fetch('/api/agent/directives', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ priority: $('dirPriority').value, text })
+  });
+  $('dirInput').value = '';
+  const d = await getJSON('/api/agent/directives');
+  if (d) renderDirectives(d.directives || []);
+};
+$('dirInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('dirSend').click(); });
+
+$('btnStart').onclick = () => fetch('/api/orchestrator/start', {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
+$('btnPause').onclick = () => fetch('/api/orchestrator/pause', {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
+$('btnStop').onclick  = () => fetch('/api/orchestrator/stop',  {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
+
+// periodic orchestrator + cycle refresh (independent of ws)
+setInterval(async () => {
+  const o = await getJSON('/api/orchestrator/state');
+  if (o) renderOrchestrator(o);
+  const c = await getJSON('/api/orchestrator/cycles?limit=20');
+  if (c?.cycles) renderCycles(c.cycles);
+}, 3000);
+
+function renderCycles(cycles) {
+  if (!cycles.length) return;
+  const out = { passed: 'text-green-400', failed: 'text-red-400', reverted: 'text-orange-400', paused: 'text-yellow-400', errored: 'text-red-400', running: 'text-blue-400' };
+  $('cycleTable').innerHTML = cycles.map(c => `
+    <tr class="border-b border-[#1a1a22]">
+      <td class="py-1.5 px-2">${c.cycle_number}</td>
+      <td class="py-1.5 px-2 ${out[c.outcome]||''}">${c.outcome}</td>
+      <td class="py-1.5 px-2">${c.tasks_passed}/${c.tasks_attempted}</td>
+      <td class="py-1.5 px-2">${c.lines_changed}</td>
+      <td class="py-1.5 px-2">${fmt(c.tokens_used)}</td>
+      <td class="py-1.5 px-2 text-gray-500">${c.started_at ? new Date(c.started_at).toLocaleTimeString() : '—'}</td>
+      <td class="py-1.5 px-2 text-gray-400 truncate max-w-xs">${esc((c.summary||'').slice(0,80))}</td>
+    </tr>`).join('');
+}
+
+// fetch props once on load for the model badge
+getJSON('/api/props').then(p => {
+  if (p?.props?.model_alias) $('modelBadge').textContent = p.props.model_alias;
+});
+
+// kick off
+connectWS();
+pollAll();
+</script>
+</body>
+</html>

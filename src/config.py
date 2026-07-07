@@ -1,0 +1,103 @@
+"""Configuration for Solo Agent.
+
+All settings come from environment variables (with sensible defaults) so the
+same code runs locally and in Docker. See COLDSTART.md / docker-compose.yml.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+class Settings(BaseSettings):
+    """Central configuration. Override any field via env var of the same name."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # --- Server ----------------------------------------------------------------
+    host: str = "0.0.0.0"
+    port: int = 8090
+
+    # --- llama-server (the thing being monitored) ------------------------------
+    llama_server_url: str = "http://localhost:8080"
+    poll_interval: float = 2.0  # seconds between metric polls
+    http_timeout: float = 3.0  # per-request timeout to llama-server
+
+    # --- Storage ---------------------------------------------------------------
+    # SQLite lives under data/ (mounted volume in Docker).
+    db_path: Path = REPO_ROOT / "data" / "solo-agent.db"
+    metrics_retention_hours: int = 24
+    activity_retention_days: int = 7
+    activity_retention_rows: int = 5000
+
+    # --- Shared state files ----------------------------------------------------
+    # The agent's workspace (tasks.md, journal.md, plan.md, directives.md, ...).
+    # Mounted into the container; defaults to ./workspace for local dev.
+    state_dir: Path = REPO_ROOT / "workspace"
+
+    # --- Orchestrator (Ralph loop) ---------------------------------------------
+    # The repo the loop improves. Defaults to solo-agent itself.
+    target_repo: Path = REPO_ROOT
+    # Verification command run by the orchestrator (NOT the agent) in target_repo.
+    verify_command: str = "./venv/bin/python -m pytest -q"
+    # Git isolation. The orchestrator never commits to base_branch directly.
+    base_branch: str = "main"
+    work_branch: str = "solo-agent/auto"
+    auto_merge_to_base: bool = False
+
+    # The agent command template. Substitutions: {repo} {session} {title} {model} {prompt}.
+    # Default drives OpenCode headlessly. Swap for Aider/custom by editing this string.
+    agent_command: str = (
+        "opencode run --auto --format json "
+        "--dir {repo} --session {session} --title {title} --model {model} "
+        '"{prompt}"'
+    )
+    agent_model: str = "llama-local/qwen36-reap"
+
+    # Per-goal timeout. OpenCode can hang indefinitely (issue #4255); never wait forever.
+    per_goal_timeout_sec: float = 1800.0  # 30 min hard cap per goal
+    cycle_timeout_sec: float = 7200.0  # 2h hard cap per full cycle
+    max_trials_per_task: int = 3  # max reflect-retry attempts per backlog task
+    max_steps_per_goal: int = 200  # soft cap on observed tool calls per goal
+
+    # Budget governor. Breaching either pauses the loop + alerts the human.
+    daily_token_budget: int = 2_000_000
+    cycle_token_budget: int = 200_000
+
+    # Diminishing-returns detector: N consecutive cycles with < threshold change
+    # (or all verify-fail) => auto-pause and surface to the human.
+    stall_detection_cycles: int = 3
+    stall_min_lines_changed: int = 5
+
+    # How the loop waits between cycles when running.
+    inter_cycle_delay_sec: float = 5.0
+
+    # Control surface for startup. The loop does NOT auto-start unless told to.
+    autostart_orchestrator: bool = False
+
+    def ensure_dirs(self) -> None:
+        """Create runtime directories if missing."""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+
+
+# Single shared instance. Imported everywhere via `from src.config import settings`.
+settings = Settings()  # type: ignore[call-arg]
+settings.ensure_dirs()
+
+
+# Convenience: phase enum lives here so it's importable from anywhere without cycles.
+OrchestratorPhase = Literal[
+    "idle", "reflect", "plan", "execute", "verify", "record", "paused", "stopped", "error"
+]

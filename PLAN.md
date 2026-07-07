@@ -6,6 +6,9 @@ A containerized web dashboard that monitors a local llama.cpp coding agent. It w
 ## What This Is NOT
 This is NOT the agent itself. The agent runs separately (e.g. OpenCode, Aider, custom loop). This dashboard is a passive observer and light manager.
 
+> **Update (post-build):** The project grew two more subsystems beyond the original
+> monitoring dashboard. See sections 10 and 11 below. The full picture is in README.md.
+
 ---
 
 ## 1. System Architecture
@@ -256,3 +259,54 @@ services:
 5. Dashboard just watches — it doesn't control the agent
 6. The agent CAN post activity to our API, but doesn't have to
 7. State files (tasks.md etc.) are in the agent's workspace, mounted into the container
+
+---
+
+## 10. Directive Queue (human → agent feedback)
+
+A second subsystem added during implementation: a feedback channel that lets a
+human queue guidance or direction for the running agent.
+
+- Lives in `<STATE_DIR>/directives.md`, a sibling of tasks.md/journal.md.
+- Full lifecycle: `pending → acknowledged → done`.
+- Two convergent channels: the agent edits the `status:` line in the file, **or**
+  PATCHes `/api/agent/directives/{id}`. Both stay in sync (file ↔ SQLite).
+- Priorities: `high | normal | low`.
+- IDs are dashboard-minted (`d1`, `d2`, …) and stable.
+
+Endpoints: `GET/POST /api/agent/directives`, `GET/PATCH /api/agent/directives/{id}`.
+
+Agent integration contract: read directives.md each loop; advance pending items.
+
+---
+
+## 11. Ralph Orchestrator (autonomous self-improvement loop)
+
+A third subsystem: a 24/7 loop that drives OpenCode headlessly to continuously
+improve a target repo. Implements the [Ralph loop](https://ghuntley.com/loop/)
+pattern (fresh-context-per-goal orchestrator) extended with a Reflexion-style
+reflect→plan→execute outer cycle.
+
+### State machine
+```
+IDLE ──start──▶ REFLECT ──▶ PLAN ──▶ EXECUTE ──▶ VERIFY ──▶ RECORD ──┐
+ ▲                                                                   │
+ └──pause/stop◀──────────────────────────────────────────────────────┘
+```
+
+### Design rules (non-negotiable)
+- **Fresh context per goal** — each `opencode run` is a new session; no context bleed.
+- **Done is externally verified** — the orchestrator runs `VERIFY_COMMAND` itself; the agent cannot self-attest.
+- **Git isolation** — all work on `WORK_BRANCH`; never touches `BASE_BRANCH`; snapshot + auto-revert on red.
+- **Orchestrator owns the loop** — the agent cannot spawn the next cycle, raise its budget, or bypass the gate.
+
+### Circuit breakers
+Per-goal hard timeout (runs can hang), token budget governor (per-cycle + per-day),
+loop/no-progress/diminishing-returns detectors, kill switch honored mid-cycle.
+OpenCode `doom_loop: deny` + `question: deny` required for unattended runs.
+
+### Configurability
+`TARGET_REPO` (defaults to solo-agent itself — self-improving), `VERIFY_COMMAND`
+(default `pytest -q`), `AGENT_COMMAND` (default `opencode run --auto …`, swappable).
+
+Endpoints: `GET /api/orchestrator/state`, `POST /api/orchestrator/{start,pause,resume,stop}`, `GET /api/orchestrator/cycles`.

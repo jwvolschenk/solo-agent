@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+env/
+ENV/
+
+# Solo Agent runtime data
+data/
+data/*.db
+data/*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# CodeDB
+.codedb/
+codedb.snapshot
+
+# ZCode tooling state
+.zcode/
+
+# Agent workspace artifacts (created at runtime, not committed)
+workspace/backlog.md
+workspace/reflections.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
