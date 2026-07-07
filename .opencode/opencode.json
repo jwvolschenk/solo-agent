@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "llama-local": {
+      "name": "llama-server (RTX 5060 Ti)",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1"
+      },
+      "models": {
+        "qwen36-reap": {
+          "name": "Qwen3.6-28B REAP20 A3B (local, 256K ctx)",
+          "limit": {
+            "context": 262144,
+            "output": 32000
+          }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "codedb": {
+      "type": "local",
+      "command": [
+        "/home/jwvolschenk/.local/bin/codedb",
+        "mcp"
+      ]
+    }
+  }
+}

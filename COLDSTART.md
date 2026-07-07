@@ -73,6 +73,17 @@ A containerized monitoring + autonomous agent system:
 - `docker-compose.yml` — deployment config (to be created)
 - `src/` — all source code (to be created)
 
+## Agent Runner: OpenCode
+- **Binary**: `~/.opencode/bin/opencode`
+- **Project config**: `~/repos/solo-agent/.opencode/opencode.json`
+  - Provider: llama-local (OpenAI-compatible at localhost:8080)
+  - Model: qwen36-reap (256K context, 32K output)
+  - MCP: codedb only (no hindsight)
+- **Run from project dir**: `cd ~/repos/solo-agent && opencode --pure`
+  - `--pure` skips global plugins (hindsight) — use for solo-agent
+- **Headless mode**: `opencode run "build the dashboard" --pure`
+- **AGENTS.md**: `~/repos/solo-agent/AGENTS.md` — lean codedb instructions
+
 ## What to Build First
 1. Read PLAN.md
 2. Start llama-server if not running
