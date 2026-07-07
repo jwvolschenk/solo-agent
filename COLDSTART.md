@@ -1,100 +1,40 @@
 # Solo Agent — Cold Start Briefing
-## Everything a new session needs to know
 
----
+## What This Project Is
+A monitoring dashboard for a local llama.cpp coding agent. It watches server health, performance metrics, and agent activity. It does NOT run the agent — the agent runs separately.
 
-## The Hardware
-- **GPU**: RTX 5060 Ti 16GB VRAM (Blackwell sm_120)
-- **CPU**: AMD Ryzen 7 3700X (8 cores, 16 threads)
-- **RAM**: 32GB DDR4
-- **OS**: Linux (jwv-mint)
+## The Target Being Monitored
+- **llama-server** at `http://localhost:8080`
+  - Model: Qwen3.6-28B-REAP20-A3B-Q4_K_M (MoE, 28B total, 3B active)
+  - Context: 262,144 tokens (256K)
+  - Startup: `~/services/llama-tq/start-server.sh`
+  - Service: `systemctl --user start llama-server`
+  - Endpoints: `/health`, `/metrics` (Prometheus), `/slots`, `/props`
 
-## The Model Server
-- **Fork**: TurboQuant llama.cpp at `~/services/llama-tq/llama-cpp-turboquant/`
-- **Model**: `/home/jwvolschenk/models/Qwen3.6-28B-REAP20-A3B-Q4_K_M.gguf`
-  - Architecture: qwen35moe (Qwen3.5 MoE + SSM hybrid)
-  - 40 layers, 205 experts, 8 active per token
-  - 28B total params, 3B active per token
-  - Full attention every 4th layer, SSM (Mamba) for the rest
-  - Native context: 262,144 tokens (256K)
-- **Startup script**: `~/services/llama-tq/start-server.sh`
-- **Systemd service**: `systemctl --user start llama-server`
-- **Endpoint**: `http://localhost:8080/v1/chat/completions` (OpenAI-compatible)
-- **Health**: `http://localhost:8080/health`
-- **Metrics**: `http://localhost:8080/metrics` (Prometheus format)
-- **Slots**: `http://localhost:8080/slots`
+- **Agent** running separately (OpenCode, Aider, custom, whatever)
+  - Writes to shared state files: tasks.md, journal.md, plan.md
+  - Can POST activity to our API (optional)
 
-## Key Server Settings (all benchmarked)
+## Key Performance Numbers (for display context)
 ```
--ngl -1              # Auto-fit: per-tensor split (attention on GPU, experts on CPU)
--fitt 500            # 500 MiB VRAM margin
--ctk turbo4          # 4-bit KV keys (TurboQuant)
--ctv turbo2          # 2-bit KV values (TurboQuant)
---no-mmap            # Pinned memory for faster PCIe transfers
---mlock              # Prevent swapping
--ub 2048             # Micro-batch (biggest prefill win)
--b 4096              # Batch size
--c 262144            # 256K context
--t 8                 # CPU threads
+Prefill: ~1,940-2,600 t/s depending on prompt size
+Decode:  ~94 t/s
+Context: 262,144 tokens
 ```
 
-## Performance (benchmarked)
-```
-Prefill (pp512):   1,935-1,979 t/s
-Prefill (pp4096):  2,603 t/s
-Prefill (pp8192):  2,563 t/s
-Prefill (pp16384): 2,463 t/s
-Decode (tg128):    93-97 t/s
-Context:           262,144 tokens (256K) — zero perf penalty
-```
+## What to Build
+Read PLAN.md for the full architecture. In short:
+1. FastAPI backend polling llama-server metrics
+2. HTML dashboard with Chart.js charts
+3. State file reader (tasks.md, journal.md parser)
+4. Agent activity API (optional POST endpoint)
+5. Docker container
 
-## The Product (what we're building)
-A containerized monitoring + autonomous agent system:
-1. **Dashboard** (HTML/JS at :8090) — real-time monitoring of server + agent
-2. **Orchestrator** (Python/FastAPI at :8091) — runs the agent loop
-3. **Agent Loop** — given a goal, plans → builds → tracks → summarizes → continues
-
-## How the Agent Works
-- Receives a goal via API or config file
-- Breaks it into tasks (stored in `workspace/tasks.md`)
-- Executes one task at a time via LLM calls
-- Uses tools: read/write/edit files, shell commands, git
-- Tracks progress in `workspace/journal.md`
-- When context hits 80% of 256K: auto-summarize, reset, continue
-- Pauses for human help when stuck (3 retries on same error)
+## Files
+- `PLAN.md` — full architecture and implementation plan
+- `COLDSTART.md` — this file
+- `src/` — all source code (to be created)
+- `docker-compose.yml` — deployment (to be created)
 
 ## Code Repo
-- `~/repos/solo-agent/` — cloned from `git@github.com:jwvolschenk/solo-agent.git`
-- Read `PLAN.md` for full architecture and implementation phases
-
-## Key Files
-- `PLAN.md` — full product plan with architecture, phases, file structure
-- `COLDSTART.md` — this file
-- `docker-compose.yml` — deployment config (to be created)
-- `src/` — all source code (to be created)
-
-## Agent Runner: OpenCode
-- **Binary**: `~/.opencode/bin/opencode`
-- **Project config**: `~/repos/solo-agent/.opencode/opencode.json`
-  - Provider: llama-local (OpenAI-compatible at localhost:8080)
-  - Model: qwen36-reap (256K context, 32K output)
-  - MCP: codedb only (no hindsight)
-- **Run from project dir**: `cd ~/repos/solo-agent && opencode --pure`
-  - `--pure` skips global plugins (hindsight) — use for solo-agent
-- **Headless mode**: `opencode run "build the dashboard" --pure`
-- **AGENTS.md**: `~/repos/solo-agent/AGENTS.md` — lean codedb instructions
-
-## What to Build First
-1. Read PLAN.md
-2. Start llama-server if not running
-3. Build Phase 1: metrics collector + dashboard
-4. Build Phase 2: agent orchestrator + tool system
-5. Build Phase 3: context management
-6. Build Phase 4: dashboard integration
-7. Build Phase 5: resilience
-
-## External References
-- llama-server API: `http://localhost:8080` (OpenAI-compatible)
-- Prometheus metrics format at `/metrics`
-- TurboQuant fork: `~/services/llama-tq/llama-cpp-turboquant/`
-- Fable fork (alternative, no turbo KV): `~/services/custom-llamacpp/llama.cpp/`
+`~/repos/solo-agent/` — cloned from `git@github.com:jwvolschenk/solo-agent.git`
