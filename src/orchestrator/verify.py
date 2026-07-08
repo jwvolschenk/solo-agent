@@ -31,7 +31,7 @@ class VerifyResult:
 
 
 async def run_verify(timeout: float = 600.0) -> VerifyResult:
-    """Run the verification command in settings.target_repo.
+    """Run the verification command in settings.project_path.
 
     The command is split with shlex so ``pytest -q`` etc. work. Output is
     captured and truncated to a sane size for storage.
@@ -40,7 +40,7 @@ async def run_verify(timeout: float = 600.0) -> VerifyResult:
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd=str(settings.target_repo),
+            cwd=str(settings.project_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

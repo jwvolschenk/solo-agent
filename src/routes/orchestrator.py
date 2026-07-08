@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from ..config import settings
 from ..db import fetch_cycles
-from ..orchestrator import budget
 from ..orchestrator.controller import controller
 
 api_router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
@@ -13,7 +13,7 @@ api_router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
 
 @api_router.get("/state")
 async def get_state() -> dict:
-    """Current orchestrator phase, cycle count, budget, stall counters."""
+    """Current orchestrator phase, cycle count, token usage, stall counters."""
     s = controller.state
     return {
         "phase": s.phase,
@@ -25,10 +25,10 @@ async def get_state() -> dict:
         "last_snapshot_sha": s.last_snapshot_sha,
         "cycle_tokens_used": s.cycle_tokens_used,
         "daily_tokens_used": s.daily_tokens_used,
-        "budget_breached": budget.budget.breached,
         "consecutive_low_change_cycles": s.consecutive_low_change_cycles,
         "consecutive_fail_cycles": s.consecutive_fail_cycles,
         "agent_session_id": s.agent_session_id,
+        "project_path": str(settings.project_path),
         "updated_at": s.updated_at.isoformat(),
     }
 

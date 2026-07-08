@@ -39,7 +39,7 @@ collector._broadcast = manager.broadcast_snapshot
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start background tasks on boot, stop them on shutdown."""
-    log.info("solo-agent starting (llama=%s, target=%s)", settings.llama_server_url, settings.target_repo)
+    log.info("solo-agent starting (llama=%s, project=%s)", settings.llama_server_url, settings.project_path)
     init_db()
     await collector.start()
     await watcher.start()
@@ -64,6 +64,7 @@ app = FastAPI(
 # Register all routers.
 from .routes import (  # noqa: E402 (import after app for circular-free wiring)
     agent,
+    config_route,
     directives,
     health,
     metrics,
@@ -73,7 +74,7 @@ from .routes import (  # noqa: E402 (import after app for circular-free wiring)
     ws as ws_route,
 )
 
-for mod in (health, metrics, server, agent, directives, state, orchestrator, ws_route):
+for mod in (health, metrics, server, agent, directives, state, orchestrator, config_route, ws_route):
     app.include_router(mod.api_router)
 
 

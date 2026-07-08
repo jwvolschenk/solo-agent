@@ -8,7 +8,7 @@ from src.config import settings
 @pytest.fixture
 def controller_with_tmp_repo(tmp_target_repo, monkeypatch, tmp_settings):
     """A fresh controller pointed at a tmp git repo + tmp state/db."""
-    monkeypatch.setattr(settings, "target_repo", tmp_target_repo)
+    monkeypatch.setattr(settings, "project_path", tmp_target_repo)
     monkeypatch.setattr(settings, "base_branch", "main")
     monkeypatch.setattr(settings, "work_branch", "solo-agent/test")
     monkeypatch.setattr(settings, "verify_command", "true")  # always passes
@@ -20,7 +20,7 @@ def controller_with_tmp_repo(tmp_target_repo, monkeypatch, tmp_settings):
     from src.orchestrator import budget as budgetmod
     from src.orchestrator import guardrails
     ctlmod.controller = ctlmod.OrchestratorController()
-    budgetmod.budget = budgetmod.BudgetState()
+    budgetmod.budget = budgetmod.TokenCounter()
     guardrails.kill_switch.clear()
     guardrails.loop_detector.reset()
     yield ctlmod.controller
@@ -29,7 +29,7 @@ def controller_with_tmp_repo(tmp_target_repo, monkeypatch, tmp_settings):
 @pytest.mark.asyncio
 async def test_start_requires_repo(controller_with_tmp_repo, monkeypatch):
     # point at a non-repo path
-    monkeypatch.setattr(settings, "target_repo", "/tmp")
+    monkeypatch.setattr(settings, "project_path", "/tmp")
     c = controller_with_tmp_repo
     c.state.cycle_number = 0
     msg = await c.start()
@@ -50,16 +50,16 @@ async def test_kill_switch_stops_loop(controller_with_tmp_repo):
 
 
 @pytest.mark.asyncio
-async def test_budget_breach_pauses(controller_with_tmp_repo, monkeypatch):
+async def test_token_usage_never_blocks_loop(controller_with_tmp_repo):
+    """No budgets on a local model — tokens are counted for display but never pause."""
     from src.orchestrator import budget as budgetmod
-    # set a tiny budget so any token usage trips it
-    budgetmod.budget.cycle_limit = 1
-    budgetmod.budget.day_limit = 1_000_000
     c = controller_with_tmp_repo
-    # simulate token usage pushing over the cycle limit
-    budgetmod.budget.add(100)  # already over cycle_limit of 1
-    assert budgetmod.budget.ok is False
-    assert budgetmod.budget.breached == "cycle"
+    # simulate heavy token usage
+    budgetmod.budget.add(10_000_000)
+    assert budgetmod.budget.cycle_tokens == 10_000_000
+    # but it never blocks — the loop always runs 24/7
+    assert budgetmod.budget.ok is True
+    assert budgetmod.budget.breached == ""
 
 
 def test_controller_persists_and_resumes(controller_with_tmp_repo):

@@ -1,19 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "llama-local": {
-      "name": "llama-server (RTX 5060 Ti)",
+    "llamacpp": {
       "npm": "@ai-sdk/openai-compatible",
+      "name": "llamacpp TurboQuant (local)",
       "options": {
         "baseURL": "http://127.0.0.1:8080/v1"
       },
       "models": {
-        "qwen36-reap": {
-          "name": "Qwen3.6-28B REAP20 A3B (local, 256K ctx)",
-          "limit": {
-            "context": 262144,
-            "output": 32000
-          }
+        "qwen3.6-reap": {
+          "name": "Qwen 3.6 28B A3B REAP"
         }
       }
     }

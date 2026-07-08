@@ -96,6 +96,14 @@
         <div><div id="orchTokens" class="text-lg font-bold mono">0</div><div class="text-[10px] text-gray-500 uppercase">tokens</div></div>
       </div>
       <div>
+        <div class="text-xs text-gray-500 mb-1">Project path <span class="text-gray-600">(OpenCode sandbox)</span></div>
+        <div class="flex gap-2">
+          <input id="projectPath" placeholder="/path/to/repo"
+            class="flex-1 text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 mono" />
+          <button id="btnSetPath" class="px-3 py-1 text-xs rounded bg-[#2a2a36] hover:bg-[#363645] text-gray-300 font-medium">Set</button>
+        </div>
+      </div>
+      <div>
         <div class="text-xs text-gray-500 mb-1">Current task</div>
         <div id="currentTask" class="text-sm text-gray-300 min-h-[2.5rem]">—</div>
       </div>
@@ -314,6 +322,10 @@ function renderOrchestrator(o) {
   const errEl = $('orchError');
   if (o.last_error) { errEl.textContent = o.last_error; errEl.classList.remove('hidden'); }
   else { errEl.classList.add('hidden'); }
+  // project path — only update the field if the user isn't editing it
+  if (o.project_path && document.activeElement !== $('projectPath')) {
+    $('projectPath').value = o.project_path;
+  }
 }
 
 function renderActivity(events) {
@@ -364,6 +376,14 @@ $('dirInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('dirSe
 $('btnStart').onclick = () => fetch('/api/orchestrator/start', {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
 $('btnPause').onclick = () => fetch('/api/orchestrator/pause', {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
 $('btnStop').onclick  = () => fetch('/api/orchestrator/stop',  {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
+$('btnSetPath').onclick = async () => {
+  const p = $('projectPath').value.trim();
+  if (!p) return;
+  const r = await fetch('/api/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({project_path: p})});
+  const d = await r.json();
+  if (!r.ok) { alert(d.detail || 'failed to set project path'); return; }
+  $('projectPath').value = d.project_path;
+};
 
 // periodic orchestrator + cycle refresh (independent of ws)
 setInterval(async () => {

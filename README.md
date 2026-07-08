@@ -4,7 +4,7 @@ A self-contained control plane for a **local LLM coding agent**. Three subsystem
 
 1. **Monitoring dashboard** — passively watches a local llama-server (health, token throughput, context usage, slots) and the agent's shared state files.
 2. **Directive queue** — a human → agent feedback channel. Queue guidance or direction; the agent acknowledges and completes it (full lifecycle: `pending → acknowledged → done`).
-3. **Ralph orchestrator** — an autonomous self-improvement loop that drives [OpenCode](https://opencode.ai) headlessly: it reflects on the codebase, plans small verifiable tasks, executes each in a fresh context, verifies with the real test suite, and commits or reverts. Runs 24/7 with budget governors, git isolation, and circuit breakers.
+3. **Ralph orchestrator** — an autonomous self-improvement loop that drives [OpenCode](https://opencode.ai) headlessly: it reflects on the codebase, plans small verifiable tasks, executes each in a fresh context, verifies with the real test suite, and commits or reverts. Runs 24/7 with git isolation and circuit breakers (no token budgets — it's a local model).
 
 > **This is not the agent.** The agent (OpenCode, Aider, custom) runs separately. Solo Agent monitors it, feeds it direction, and — if you enable the orchestrator — drives it in a continuous improvement loop.
 
@@ -49,14 +49,16 @@ All settings are environment variables (defaults shown):
 | `POLL_INTERVAL` | `2` | seconds between metric polls |
 | `STATE_DIR` | `./workspace` | agent's shared state files (tasks.md, directives.md, …) |
 | `DB_PATH` | `./data/solo-agent.db` | SQLite persistence |
-| `TARGET_REPO` | (this repo) | repo the Ralph loop improves |
+| `PROJECT_PATH` | (this repo) | the folder the loop works in — both the git target AND OpenCode's `--dir` sandbox. Settable live from the dashboard. |
 | `VERIFY_COMMAND` | `./venv/bin/python -m pytest -q` | test gate run by the orchestrator (not the agent) |
 | `BASE_BRANCH` | `main` | protected branch; orchestrator never commits here directly |
 | `WORK_BRANCH` | `solo-agent/auto` | where orchestrator work lands |
 | `AGENT_COMMAND` | `opencode run --auto …` | agent invocation template |
-| `CYCLE_TOKEN_BUDGET` | `200000` | per-cycle token ceiling |
-| `DAILY_TOKEN_BUDGET` | `2000000` | per-day token ceiling |
 | `AUTOSTART_ORCHESTRATOR` | `false` | auto-start the loop on boot |
+
+> **No token budgets.** This runs against a local model, so the loop churns 24/7.
+> Token usage is counted for display only and never pauses the loop. The real
+> safety net is the guardrails below.
 
 ---
 
@@ -100,11 +102,18 @@ All routes return JSON. The dashboard polls these and also receives live updates
 | `GET` | `/api/state/plan` | raw `plan.md` |
 | `GET` | `/api/state/summaries` | list context-reset summaries |
 
+### Configuration (runtime)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/config` | current runtime config (project_path, verify_command, …) |
+| `PUT` | `/api/config` | set `project_path` (where the orchestrator works) |
+
 ### Orchestrator
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/orchestrator/state` | phase, cycle, budget, stall counters |
+| `GET` | `/api/orchestrator/state` | phase, cycle, token usage, stall counters, project_path |
 | `POST` | `/api/orchestrator/start` | begin the Ralph loop |
 | `POST` | `/api/orchestrator/pause` | pause between cycles |
 | `POST` | `/api/orchestrator/resume` | resume from pause |
@@ -141,7 +150,7 @@ Both channels converge: a file edit is detected by the watcher and mirrored to S
 The orchestrator drives OpenCode via subprocess. It requires:
 
 - **OpenCode** on `PATH` (or set `AGENT_COMMAND` to your agent's headless invocation).
-- **A git repo** at `TARGET_REPO` with a clean working tree on `BASE_BRANCH`.
+- **A git repo** at `PROJECT_PATH` (set via env or the dashboard) with a clean working tree on `BASE_BRANCH`.
 - **A verification command** (`VERIFY_COMMAND`) that exits non-zero on failure — the orchestrator runs this itself; the agent cannot self-attest completion.
 - **OpenCode permissions**: for unattended runs, set `doom_loop: deny` and `question: deny` in the target's `.opencode/opencode.json` (or via `OPENCODE_PERMISSION` env), or the agent will deadlock waiting for a human.
 
@@ -168,10 +177,10 @@ The loop's contract with the agent:
 └───────────────┬──────────────────────────────────────────────┘
                 │ subprocess (asyncio)
                 ▼
-        opencode run --auto --format json --dir <TARGET_REPO> …
+        opencode run --auto --format json --dir <PROJECT_PATH> …
                 │
                 ▼ verification gate (orchestrator-owned):
-        <VERIFY_COMMAND> in TARGET_REPO
+        <VERIFY_COMMAND> in PROJECT_PATH
                 │
                 ▼ git ops: work branch, snapshot, pass→keep, fail→revert
 ```
@@ -182,7 +191,7 @@ The loop's contract with the agent:
 IDLE ──start──▶ REFLECT ──▶ PLAN ──▶ EXECUTE ──▶ VERIFY ──▶ RECORD ──┐
  ▲                                                                   │
  └──pause/stop◀──────────────────────────────────────────────────────┘
-                       (loops forever until stopped or budget hit)
+                  (loops forever 24/7 until stopped)
 ```
 
 ### Circuit breakers
@@ -190,13 +199,15 @@ IDLE ──start──▶ REFLECT ──▶ PLAN ──▶ EXECUTE ──▶ VER
 | Risk | Breaker |
 |---|---|
 | Infinite loops | per-goal timeout + `doom_loop: deny` + action-sequence hash detector |
-| Token runaway | per-cycle + per-day budget governor; breach → pause |
 | Silent "success" | orchestrator runs verify itself; never trusts agent self-report |
 | Regressions | git snapshot per cycle; auto-revert on red |
 | Destructive commands | work-branch-only; deny-list in opencode permissions |
 | Context rot | fresh session per goal |
 | No forward progress | diff-budget + no-progress detector → escalate to human |
 | Stuck at 3am | kill switch (dashboard button / API) honored mid-cycle |
+
+> No token budgets — this is a local model. The loop runs 24/7; token usage is
+> counted for display only and never pauses the loop.
 
 ---
 
@@ -227,7 +238,7 @@ src/
 │   ├── runner.py        OpenCode subprocess runner (timeout + JSON parse)
 │   ├── verify.py        Orchestrator-owned test gate
 │   ├── git_ops.py       Branch isolation + snapshot/revert
-│   ├── budget.py        Token governor
+│   ├── budget.py        Token counter (display only — no budgets)
 │   ├── guardrails.py    Loop/no-progress/kill-switch detectors
 │   ├── artifacts.py     backlog.md, reflections.md, skill index
 │   └── prompts.py       Reflect/plan/execute prompt templates

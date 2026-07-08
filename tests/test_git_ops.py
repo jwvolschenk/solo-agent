@@ -7,7 +7,7 @@ from src.config import settings
 
 @pytest.fixture(autouse=True)
 def point_at_tmp_repo(tmp_target_repo, monkeypatch):
-    monkeypatch.setattr(settings, "target_repo", tmp_target_repo)
+    monkeypatch.setattr(settings, "project_path", tmp_target_repo)
     monkeypatch.setattr(settings, "base_branch", "main")
     monkeypatch.setattr(settings, "work_branch", "solo-agent/test")
 
@@ -43,7 +43,7 @@ async def test_commit_and_revert_roundtrip():
     before = await git_ops.snapshot()
 
     # make a change
-    repo = settings.target_repo
+    repo = settings.project_path
     (repo / "new_file.txt").write_text("hello")
 
     r, after = await git_ops.commit_all("test commit")
@@ -63,7 +63,7 @@ async def test_diff_stat_counts_lines():
     from src.orchestrator import git_ops
     await git_ops.ensure_work_branch()
     before = await git_ops.snapshot()
-    (settings.target_repo / "README.md").write_text("# target\n\nnew line here\nmore lines\n")
+    (settings.project_path / "README.md").write_text("# target\n\nnew line here\nmore lines\n")
     await git_ops.commit_all("add lines")
     lines = await git_ops.diff_stat(before)
     assert lines >= 2

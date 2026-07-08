@@ -28,8 +28,8 @@ class GitResult:
 
 
 async def _git(args: list[str]) -> GitResult:
-    """Run a git command in settings.target_repo."""
-    cmd = ["git", "-C", str(settings.target_repo), *args]
+    """Run a git command in settings.project_path."""
+    cmd = ["git", "-C", str(settings.project_path), *args]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

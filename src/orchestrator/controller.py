@@ -3,8 +3,9 @@
 Phases per cycle:
     IDLE -> REFLECT -> PLAN -> EXECUTE (per task) -> VERIFY -> RECORD -> back to REFLECT
 
-Guardrails consulted between phases: budget governor, no-progress detector,
-diminishing-returns detector, kill switch. Any trip pauses the loop.
+There are no token budgets (local model, runs 24/7). Guardrails consulted between
+phases: kill switch, no-progress detector, diminishing-returns detector. Any trip
+pauses the loop. Token usage is counted for display only (see budget.py).
 
 State is persisted to SQLite (orch_state) so an interrupted loop resumes cleanly.
 The controller runs as an asyncio background task started by the FastAPI lifespan.
@@ -68,7 +69,7 @@ class OrchestratorController:
     async def start(self) -> str:
         """Begin cycling. Returns a status message."""
         if not await is_repo():
-            msg = f"target_repo {settings.target_repo} is not a git repository"
+            msg = f"project_path {settings.project_path} is not a git repository"
             log.error(msg)
             self.state.phase = "error"
             self.state.last_error = msg
@@ -85,7 +86,7 @@ class OrchestratorController:
         self.state.last_error = None
         self._persist()
         self._task = asyncio.create_task(self._loop(), name="orchestrator")
-        log.info("orchestrator started (target=%s)", settings.target_repo)
+        log.info("orchestrator started (project=%s)", settings.project_path)
         return "started"
 
     async def pause(self) -> str:
@@ -151,19 +152,15 @@ class OrchestratorController:
 
     async def _run_cycle(self) -> None:
         """One REFLECT -> PLAN -> EXECUTE -> VERIFY -> RECORD cycle."""
-        # check budget / kill switch up front
+        # Only the kill switch gates the loop up front. No token budgets —
+        # this runs against a local model and churns 24/7. Token usage is
+        # counted for display only (see budget.py).
         if guardrails.kill_switch.engaged:
             self.state.running = False
             self.state.phase = "stopped"
             self._persist()
             return
         budget.budget.rollover_day_if_needed()
-        if not budget.budget.ok:
-            self.state.phase = "paused"
-            self.state.last_error = f"budget breached: {budget.budget.breached}"
-            self.state.running = False
-            self._persist()
-            return
 
         self.state.cycle_number += 1
         cycle = self.state.cycle_number
@@ -219,7 +216,7 @@ class OrchestratorController:
         self._persist()
         max_tasks = min(len(pending), 3)  # cap work per cycle to keep cycles bounded
         for task in pending[:max_tasks]:
-            if guardrails.kill_switch.engaged or not budget.budget.ok:
+            if guardrails.kill_switch.engaged:
                 break
             tasks_attempted += 1
             self.state.current_task = task.text

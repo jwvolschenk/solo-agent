@@ -47,9 +47,11 @@ class Settings(BaseSettings):
     state_dir: Path = REPO_ROOT / "workspace"
 
     # --- Orchestrator (Ralph loop) ---------------------------------------------
-    # The repo the loop improves. Defaults to solo-agent itself.
-    target_repo: Path = REPO_ROOT
-    # Verification command run by the orchestrator (NOT the agent) in target_repo.
+    # The folder the loop works in. This is BOTH the git target (the repo being
+    # improved) AND OpenCode's --dir sandbox (where it opens its session).
+    # Set via PROJECT_PATH env or the dashboard.
+    project_path: Path = REPO_ROOT
+    # Verification command run by the orchestrator (NOT the agent) in project_path.
     verify_command: str = "./venv/bin/python -m pytest -q"
     # Git isolation. The orchestrator never commits to base_branch directly.
     base_branch: str = "main"
@@ -63,7 +65,7 @@ class Settings(BaseSettings):
         "--dir {repo} --session {session} --title {title} --model {model} "
         '"{prompt}"'
     )
-    agent_model: str = "llama-local/qwen36-reap"
+    agent_model: str = "llamacpp/qwen3.6-reap"
 
     # Per-goal timeout. OpenCode can hang indefinitely (issue #4255); never wait forever.
     per_goal_timeout_sec: float = 1800.0  # 30 min hard cap per goal
@@ -71,9 +73,10 @@ class Settings(BaseSettings):
     max_trials_per_task: int = 3  # max reflect-retry attempts per backlog task
     max_steps_per_goal: int = 200  # soft cap on observed tool calls per goal
 
-    # Budget governor. Breaching either pauses the loop + alerts the human.
-    daily_token_budget: int = 2_000_000
-    cycle_token_budget: int = 200_000
+    # No token budgets — this runs against a local model, so cost is irrelevant
+    # and the loop should churn 24/7. We still COUNT tokens for display, but they
+    # never pause the loop. The real safety net is the guardrails (loop detector,
+    # no-progress detector, git auto-revert, kill switch).
 
     # Diminishing-returns detector: N consecutive cycles with < threshold change
     # (or all verify-fail) => auto-pause and surface to the human.

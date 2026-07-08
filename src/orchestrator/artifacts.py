@@ -21,13 +21,11 @@ log = logging.getLogger("solo.artifacts")
 
 
 def _workspace() -> Path:
-    """Where artifacts live. For self-improving mode that's target_repo; for
-    external targets we keep a sibling workspace dir to avoid polluting the target.
-
-    Simplest correct behavior: put artifacts in target_repo (so the agent sees
-    them in its working dir). This is the standard Ralph convention.
+    """Where artifacts live: inside project_path so the agent sees them in its
+    working dir (its sandbox). This is the standard Ralph convention — backlog.md,
+    reflections.md, and skills/ sit alongside the code being improved.
     """
-    return Path(settings.target_repo)
+    return Path(settings.project_path)
 
 
 def backlog_path() -> Path:

@@ -1,66 +1,65 @@
-"""Budget governor — per-cycle and per-day token ceilings.
+"""Token counter — display only, no enforcement.
 
-Parses token usage from OpenCode's ``--format json`` event stream and tracks it
-against the configured budgets. Breaching either pauses the loop and surfaces
-an alert to the human.
+This runs against a local model, so there are no token budgets and the loop
+never pauses for token usage. We still COUNT tokens (per cycle and per day) so
+the dashboard can show throughput/usage, and the runner feeds usage here from
+OpenCode's JSON event stream. But ``ok`` is always True and ``breached`` is
+always empty — nothing in the controller gates on token count.
+
+The real safety net for 24/7 operation is in guardrails.py (loop detector,
+no-progress detector, kill switch) and git_ops.py (auto-revert on failed verify).
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import date
+from dataclasses import dataclass
 
-from ..config import settings
 from ..db import add_tokens, tokens_for_day
 
-log = logging.getLogger("solo.budget")
+log = logging.getLogger("solo.tokens")
 
 
 @dataclass
-class BudgetState:
+class TokenCounter:
+    """Tracks token usage for display. Never blocks the loop."""
+
     cycle_tokens: int = 0
     day: str = ""
     day_tokens: int = 0
-    cycle_limit: int = settings.cycle_token_budget
-    day_limit: int = settings.daily_token_budget
-    breached: str = ""  # "" | "cycle" | "day"
 
     def reset_cycle(self) -> None:
         self.cycle_tokens = 0
-        self.breached = ""
 
     def rollover_day_if_needed(self) -> None:
+        from datetime import date
+
         today = date.today().isoformat()
         if self.day != today:
             self.day = today
             self.day_tokens = tokens_for_day(today)
 
     def add(self, tokens: int) -> None:
-        """Record tokens used this cycle + today. Sets breached if a limit is hit."""
+        """Record tokens used this cycle + today. Display only — never blocks."""
         if tokens <= 0:
             return
         self.rollover_day_if_needed()
         self.cycle_tokens += tokens
         self.day_tokens = add_tokens(self.day, tokens)
-        if self.cycle_tokens >= self.cycle_limit and not self.breached:
-            self.breached = "cycle"
-            log.warning(
-                "CYCLE BUDGET BREACHED: %d >= %d tokens", self.cycle_tokens, self.cycle_limit
-            )
-        elif self.day_tokens >= self.day_limit and not self.breached:
-            self.breached = "day"
-            log.warning(
-                "DAILY BUDGET BREACHED: %d >= %d tokens", self.day_tokens, self.day_limit
-            )
 
     @property
     def ok(self) -> bool:
-        return not self.breached
+        # Always True — no budgets on a local model. The loop runs 24/7.
+        return True
+
+    @property
+    def breached(self) -> str:
+        # Always empty — nothing to breach.
+        return ""
 
 
 # Module-level singleton; the controller resets it per cycle.
-budget = BudgetState()
+budget = TokenCounter()
 
 
 def reset_cycle() -> None:
@@ -75,7 +74,6 @@ def extract_tokens_from_event(event: dict) -> int:
     """
     if not isinstance(event, dict):
         return 0
-    # try a few known shapes
     for key in ("tokens", "total_tokens"):
         v = event.get(key)
         if isinstance(v, int) and v > 0:
@@ -85,7 +83,6 @@ def extract_tokens_from_event(event: dict) -> int:
         total = usage.get("total_tokens")
         if isinstance(total, int) and total > 0:
             return total
-        # sum prompt + completion if present
         p = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
         c = usage.get("completion_tokens") or usage.get("output_tokens") or 0
         if isinstance(p, int) and isinstance(c, int) and (p or c):

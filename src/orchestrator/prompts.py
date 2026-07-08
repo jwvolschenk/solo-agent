@@ -11,7 +11,7 @@ from ..config import settings
 
 
 def reflect_prompt(cycle: int) -> str:
-    return f"""You are analyzing the codebase at {settings.target_repo} to find high-value improvements.
+    return f"""You are analyzing the codebase at {settings.project_path} to find high-value improvements.
 
 Read these files first (they are your persistent memory across cycles):
 - backlog.md   — tasks already identified (avoid duplicating)
@@ -37,7 +37,7 @@ When done, respond with a one-line summary of how many tasks you added."""
 
 
 def plan_prompt(cycle: int) -> str:
-    return f"""You are structuring the backlog at {settings.target_repo} for execution.
+    return f"""You are structuring the backlog at {settings.project_path} for execution.
 
 Read backlog.md. Re-order and refine the unchecked items so that:
 - The highest-value, lowest-risk task is first.
@@ -51,7 +51,7 @@ When done, respond with a one-line summary of the task ordering."""
 
 
 def execute_prompt(cycle: int, task_text: str) -> str:
-    return f"""You are implementing ONE task in the codebase at {settings.target_repo}.
+    return f"""You are implementing ONE task in the codebase at {settings.project_path}.
 
 TASK:
 {task_text}

@@ -122,3 +122,28 @@ def test_dashboard_html_served(client):
 def test_metrics_history_validates_range(client):
     r = client.get("/api/metrics/history?range=2h")
     assert r.status_code == 422  # only 1h/6h/24h allowed
+
+
+def test_config_get_and_set(client, tmp_path):
+    # GET
+    r = client.get("/api/config")
+    assert r.status_code == 200
+    assert "project_path" in r.json()
+
+    # make a real dir to point at
+    target = tmp_path / "myproject"
+    target.mkdir()
+
+    # PUT
+    r2 = client.put("/api/config", json={"project_path": str(target)})
+    assert r2.status_code == 200
+    assert r2.json()["project_path"] == str(target)
+
+    # GET reflects the change
+    r3 = client.get("/api/config")
+    assert r3.json()["project_path"] == str(target)
+
+
+def test_config_rejects_nonexistent_path(client):
+    r = client.put("/api/config", json={"project_path": "/nonexistent/xyz"})
+    assert r.status_code == 400

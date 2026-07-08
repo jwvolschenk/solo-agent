@@ -25,18 +25,18 @@ services:
       - STATE_DIR=/state
       - DB_PATH=/data/solo-agent.db
 
-      # Orchestrator config. Default improves solo-agent itself; point elsewhere
-      # to improve a different product repo.
-      - TARGET_REPO=${TARGET_REPO:-/target}
+      # Orchestrator config. project_path is the folder the loop works in —
+      # both the git target AND OpenCode's --dir sandbox. Set via PROJECT_PATH
+      # or change it live from the dashboard.
+      - PROJECT_PATH=${PROJECT_PATH:-/project}
       - VERIFY_COMMAND=${VERIFY_COMMAND:-python -m pytest -q}
       - BASE_BRANCH=${BASE_BRANCH:-main}
       - WORK_BRANCH=${WORK_BRANCH:-solo-agent/auto}
       - AGENT_COMMAND=${AGENT_COMMAND:-opencode run --auto --format json --dir {repo} --session {session} --title {title} --model {model} "{prompt}"}
-      - AGENT_MODEL=${AGENT_MODEL:-llama-local/qwen36-reap}
+      - AGENT_MODEL=${AGENT_MODEL:-llamacpp/qwen3.6-reap}
 
-      # Budgets (tokens). Breach -> pause + alert.
-      - CYCLE_TOKEN_BUDGET=${CYCLE_TOKEN_BUDGET:-200000}
-      - DAILY_TOKEN_BUDGET=${DAILY_TOKEN_BUDGET:-2000000}
+      # No token budgets — runs against a local model 24/7. Token usage is
+      # counted for display only and never pauses the loop.
 
       # Don't auto-start the loop; start it from the dashboard.
       - AUTOSTART_ORCHESTRATOR=false
@@ -44,8 +44,8 @@ services:
       - ./data:/data
       # The agent's workspace (tasks.md, journal.md, directives.md, plan.md, summaries/)
       - ${WORKSPACE_DIR:-./workspace}:/state
-      # The repo the orchestrator improves. Defaults to solo-agent itself.
-      - ${TARGET_REPO_HOST:-.}:/target
+      # The project the orchestrator works in (its sandbox). Mount your repo here.
+      - ${PROJECT_PATH_HOST:-.}:/project
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

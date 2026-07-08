@@ -57,7 +57,7 @@ def build_command(prompt: str, session_id: str, title: str) -> list[str]:
     The prompt is substituted as a single quoted argv element.
     """
     rendered = settings.agent_command.format(
-        repo=str(settings.target_repo),
+        repo=str(settings.project_path),
         session=session_id,
         title=title,
         model=settings.agent_model,
