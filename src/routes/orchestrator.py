@@ -29,6 +29,8 @@ async def get_state() -> dict:
         "consecutive_fail_cycles": s.consecutive_fail_cycles,
         "agent_session_id": s.agent_session_id,
         "project_path": str(settings.project_path),
+        "goal": settings.goal,
+        "verify_command": settings.verify_command,
         "updated_at": s.updated_at.isoformat(),
     }
 

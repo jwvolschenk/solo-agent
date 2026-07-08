@@ -48,11 +48,21 @@ class Settings(BaseSettings):
 
     # --- Orchestrator (Ralph loop) ---------------------------------------------
     # The folder the loop works in. This is BOTH the git target (the repo being
-    # improved) AND OpenCode's --dir sandbox (where it opens its session).
-    # Set via PROJECT_PATH env or the dashboard.
+    # built/improved) AND OpenCode's --dir sandbox (where it opens its session).
+    # Set via PROJECT_PATH env or the dashboard. May be empty/non-git — the
+    # orchestrator auto-initializes git on start.
     project_path: Path = REPO_ROOT
-    # Verification command run by the orchestrator (NOT the agent) in project_path.
-    verify_command: str = "./venv/bin/python -m pytest -q"
+    # The overarching goal, written to GOAL.md in the project. Free-form text
+    # that drives every cycle. Set via GOAL env or the dashboard. Required to
+    # start the loop (e.g. "Build a Tower Defense roguelite deckbuilder in Godot
+    # with themes X, Y, Z"). The agent reads GOAL.md every session.
+    goal: str = ""
+    # Verification command, OPTIONAL. Empty string = no orchestrator-run gate;
+    # the agent owns verification (runs whatever build/test the project uses).
+    # Gates are project-specific and often unknown for a from-scratch build, so
+    # the default is empty. Set only if you want a hard external gate, e.g.
+    # "python -m pytest -q" or "godot --headless --check-only".
+    verify_command: str = ""
     # Git isolation. The orchestrator never commits to base_branch directly.
     base_branch: str = "main"
     work_branch: str = "solo-agent/auto"

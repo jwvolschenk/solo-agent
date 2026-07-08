@@ -17,8 +17,10 @@ from ..config import settings
 api_router = APIRouter(prefix="/api/config", tags=["config"])
 
 
-class ProjectPathUpdate(BaseModel):
-    project_path: str
+class ConfigUpdate(BaseModel):
+    project_path: str | None = None
+    goal: str | None = None
+    verify_command: str | None = None
 
 
 @api_router.get("")
@@ -26,6 +28,7 @@ async def get_config() -> dict:
     """Return the current runtime config."""
     return {
         "project_path": str(settings.project_path),
+        "goal": settings.goal,
         "verify_command": settings.verify_command,
         "work_branch": settings.work_branch,
         "base_branch": settings.base_branch,
@@ -35,14 +38,25 @@ async def get_config() -> dict:
 
 
 @api_router.put("")
-async def set_config(body: ProjectPathUpdate) -> dict:
-    """Update project_path at runtime (where the orchestrator works).
+async def set_config(body: ConfigUpdate) -> dict:
+    """Update runtime config. Any of project_path / goal / verify_command.
 
-    The orchestrator picks this up on its next cycle; a running cycle finishes
-    on the old path first. Path must exist and be a directory.
+    The orchestrator picks up changes on its next cycle. project_path must be a
+    directory (it'll be git-init'd on start if not already a repo). An empty
+    verify_command disables the orchestrator gate (agent self-verifies).
     """
-    p = Path(body.project_path).expanduser()
-    if not p.exists() or not p.is_dir():
-        raise HTTPException(status_code=400, detail=f"{body.project_path} is not a directory")
-    settings.project_path = p
-    return {"status": "ok", "project_path": str(p)}
+    if body.project_path is not None:
+        p = Path(body.project_path).expanduser()
+        if not p.exists() or not p.is_dir():
+            raise HTTPException(status_code=400, detail=f"{body.project_path} is not a directory")
+        settings.project_path = p
+    if body.goal is not None:
+        settings.goal = body.goal
+    if body.verify_command is not None:
+        settings.verify_command = body.verify_command
+    return {
+        "status": "ok",
+        "project_path": str(settings.project_path),
+        "goal": settings.goal,
+        "verify_command": settings.verify_command,
+    }

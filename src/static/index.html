@@ -96,6 +96,11 @@
         <div><div id="orchTokens" class="text-lg font-bold mono">0</div><div class="text-[10px] text-gray-500 uppercase">tokens</div></div>
       </div>
       <div>
+        <div class="text-xs text-gray-500 mb-1">Goal <span class="text-gray-600">(drives every cycle)</span></div>
+        <textarea id="goalText" rows="2" placeholder="e.g. Build a Tower Defense roguelite deckbuilder in Godot with themes: neon, synthwave..."
+          class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-none"></textarea>
+      </div>
+      <div>
         <div class="text-xs text-gray-500 mb-1">Project path <span class="text-gray-600">(OpenCode sandbox)</span></div>
         <div class="flex gap-2">
           <input id="projectPath" placeholder="/path/to/repo"
@@ -322,9 +327,12 @@ function renderOrchestrator(o) {
   const errEl = $('orchError');
   if (o.last_error) { errEl.textContent = o.last_error; errEl.classList.remove('hidden'); }
   else { errEl.classList.add('hidden'); }
-  // project path — only update the field if the user isn't editing it
+  // project path + goal — only update fields the user isn't editing
   if (o.project_path && document.activeElement !== $('projectPath')) {
     $('projectPath').value = o.project_path;
+  }
+  if (o.goal != null && document.activeElement !== $('goalText')) {
+    $('goalText').value = o.goal;
   }
 }
 
@@ -377,12 +385,18 @@ $('btnStart').onclick = () => fetch('/api/orchestrator/start', {method:'POST'}).
 $('btnPause').onclick = () => fetch('/api/orchestrator/pause', {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
 $('btnStop').onclick  = () => fetch('/api/orchestrator/stop',  {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
 $('btnSetPath').onclick = async () => {
+  // send both goal + path together so they're set in one call
+  const body = {};
   const p = $('projectPath').value.trim();
-  if (!p) return;
-  const r = await fetch('/api/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({project_path: p})});
+  const g = $('goalText').value.trim();
+  if (p) body.project_path = p;
+  if (g != null) body.goal = g;
+  if (!Object.keys(body).length) return;
+  const r = await fetch('/api/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const d = await r.json();
-  if (!r.ok) { alert(d.detail || 'failed to set project path'); return; }
-  $('projectPath').value = d.project_path;
+  if (!r.ok) { alert(d.detail || 'failed to set config'); return; }
+  if (d.project_path) $('projectPath').value = d.project_path;
+  if (d.goal != null) $('goalText').value = d.goal;
 };
 
 // periodic orchestrator + cycle refresh (independent of ws)

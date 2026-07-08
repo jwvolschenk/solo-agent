@@ -30,12 +30,22 @@ class VerifyResult:
         return f"{tag} (rc={self.returncode})"
 
 
+def is_enabled() -> bool:
+    """True if a verify command is configured. When False, the orchestrator
+    skips the verify phase entirely and the agent owns verification itself."""
+    return bool(settings.verify_command.strip())
+
+
 async def run_verify(timeout: float = 600.0) -> VerifyResult:
     """Run the verification command in settings.project_path.
 
     The command is split with shlex so ``pytest -q`` etc. work. Output is
-    captured and truncated to a sane size for storage.
+    captured and truncated to a sane size for storage. Returns a synthetic
+    PASS result if no verify command is configured (is_enabled() == False).
     """
+    if not is_enabled():
+        return VerifyResult(ok=True, returncode=0, stdout="(no verify command configured)", stderr="")
+
     cmd = shlex.split(settings.verify_command)
     try:
         proc = await asyncio.create_subprocess_exec(

@@ -28,12 +28,13 @@ from .git_ops import (
     diff_stat,
     ensure_work_branch,
     is_repo,
+    ensure_repo,
     revert_to,
     snapshot,
     stage_all,
 )
 from .runner import run_goal
-from .verify import run_verify
+from .verify import is_enabled as verify_enabled, run_verify
 
 log = logging.getLogger("solo.controller")
 
@@ -67,14 +68,23 @@ class OrchestratorController:
             self.state.running = False
 
     async def start(self) -> str:
-        """Begin cycling. Returns a status message."""
-        if not await is_repo():
-            msg = f"project_path {settings.project_path} is not a git repository"
+        """Begin cycling. Returns a status message.
+
+        Auto-initializes git on an empty/non-git project_path (the from-scratch
+        case). Requires a goal to be set — without one, the loop has nothing to
+        drive toward.
+        """
+        # require a goal
+        if not settings.goal.strip():
+            msg = "no goal set — set one via GOAL env or the dashboard before starting"
             log.error(msg)
             self.state.phase = "error"
             self.state.last_error = msg
             self._persist()
             return msg
+
+        # auto-init git if needed (from-scratch case)
+        await ensure_repo()
         await ensure_work_branch()
         artifacts.ensure_artifacts()
 
@@ -86,7 +96,7 @@ class OrchestratorController:
         self.state.last_error = None
         self._persist()
         self._task = asyncio.create_task(self._loop(), name="orchestrator")
-        log.info("orchestrator started (project=%s)", settings.project_path)
+        log.info("orchestrator started (project=%s, goal=%d chars)", settings.project_path, len(settings.goal))
         return "started"
 
     async def pause(self) -> str:
@@ -215,6 +225,7 @@ class OrchestratorController:
         self.state.phase = "execute"
         self._persist()
         max_tasks = min(len(pending), 3)  # cap work per cycle to keep cycles bounded
+        gate = verify_enabled()  # if False, no orchestrator gate; agent self-verifies
         for task in pending[:max_tasks]:
             if guardrails.kill_switch.engaged:
                 break
@@ -223,7 +234,7 @@ class OrchestratorController:
             self._persist()
             log.info("[cycle %d] EXECUTE: %s", cycle, task.text[:80])
 
-            # snapshot before each task so we can revert just it on failure
+            # snapshot before each task so we can revert just it on gate failure
             task_snap = await snapshot()
             res = await run_goal(
                 prompts.execute_prompt(cycle, task.text),
@@ -234,22 +245,32 @@ class OrchestratorController:
 
             if not res.ok:
                 log.warning("[cycle %d] task agent failed: %s", cycle, res.error)
-                await revert_to(task_snap) if task_snap else None
+                # only revert if there's a gate to enforce; without one, trust the agent
+                if gate and task_snap:
+                    await revert_to(task_snap)
                 continue
 
-            # --- VERIFY (orchestrator-owned gate) ---
-            self.state.phase = "verify"
-            self._persist()
-            verify = await run_verify()
-            if verify.ok:
+            # --- VERIFY (only if a gate is configured) ---
+            if gate:
+                self.state.phase = "verify"
+                self._persist()
+                verify = await run_verify()
+                if verify.ok:
+                    tasks_passed += 1
+                    await stage_all()
+                    await commit_all(f"solo-agent cycle {cycle}: {task.text[:72]}")
+                    log.info("[cycle %d] VERIFY PASS, committed", cycle)
+                else:
+                    log.warning("[cycle %d] VERIFY FAIL, reverting: %s", cycle, verify.summary())
+                    if task_snap:
+                        await revert_to(task_snap)
+            else:
+                # No orchestrator gate — the agent self-verifies (prompt told it to).
+                # Commit the work and count it as done.
                 tasks_passed += 1
-                # commit the passing change
                 await stage_all()
                 await commit_all(f"solo-agent cycle {cycle}: {task.text[:72]}")
-                log.info("[cycle %d] VERIFY PASS, committed", cycle)
-            else:
-                log.warning("[cycle %d] VERIFY FAIL, reverting: %s", cycle, verify.summary())
-                await revert_to(task_snap) if task_snap else None
+                log.info("[cycle %d] no gate — committed agent's self-verified work", cycle)
 
         # --- RECORD ---
         self.state.phase = "record"
@@ -257,8 +278,9 @@ class OrchestratorController:
         lines = await diff_stat(snap) if snap else 0
         outcome = "passed" if tasks_passed > 0 else ("failed" if tasks_attempted else "paused")
         reflection_text = (
-            f"Attempted {tasks_attempted} task(s); {tasks_passed} passed verify. "
-            f"{lines} lines changed. Agent summary: {reflect.final_message[:200]}"
+            f"Attempted {tasks_attempted} task(s); {tasks_passed} completed"
+            + (" (gate passed)" if gate else " (no gate; agent self-verified)")
+            + f". {lines} lines changed. Agent summary: {reflect.final_message[:200]}"
         )
         artifacts.append_reflection(
             reflection_text, cycle=cycle, outcome=outcome, sha=head,

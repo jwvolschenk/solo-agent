@@ -56,6 +56,41 @@ async def is_repo() -> bool:
     return r.ok and r.stdout.strip() == "true"
 
 
+async def has_commits() -> bool:
+    """True if the repo has at least one commit (a HEAD to branch from)."""
+    r = await _git(["rev-parse", "--verify", "HEAD"])
+    return r.ok
+
+
+async def ensure_repo() -> GitResult:
+    """Make sure project_path is a git repo with at least one commit.
+
+    For the from-scratch case: if the folder isn't a repo, `git init` it; if it
+    has no commits, make an empty initial commit so the orchestrator has a HEAD
+    to snapshot/revert against. Idempotent — no-op if already initialized.
+    """
+    if not await is_repo():
+        log.info("project_path is not a git repo — running git init")
+        # git -C won't work before the repo exists for some ops, but init is fine
+        init = await _git(["init", "-b", settings.base_branch])
+        if not init.ok:
+            # older git without -b flag
+            await _git(["init"])
+            await _git(["symbolic-ref", "HEAD", f"refs/heads/{settings.base_branch}"])
+
+    if not await has_commits():
+        log.info("repo has no commits — creating initial empty commit")
+        # need an identity configured; set locally if missing
+        await _git(["config", "user.name", "solo-agent", "--local"])
+        await _git(["config", "user.email", "solo-agent@local", "--local"])
+        # --allow-empty so we get a HEAD even with nothing staged
+        r = await _git(["commit", "--allow-empty", "-m", "solo-agent: initial commit"])
+        if not r.ok:
+            return r
+
+    return GitResult(ok=True)
+
+
 async def current_sha() -> Optional[str]:
     r = await _git(["rev-parse", "HEAD"])
     return r.stdout.strip() if r.ok and r.stdout else None
