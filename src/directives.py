@@ -41,7 +41,10 @@ _STATUS_RE = re.compile(r"^status:\s*(?P<s>pending|acknowledged|done)\s*$", re.I
 
 
 def directives_path() -> Path:
-    return settings.state_dir / DIRECTIVE_FILE
+    """Where directives.md lives: inside project_path so the agent sees it in
+    its sandbox. (Previously this used state_dir, which was a different folder
+    than where the agent works — the agent never saw the directives.)"""
+    return Path(settings.project_path) / DIRECTIVE_FILE
 
 
 # ---------------------------------------------------------------------------

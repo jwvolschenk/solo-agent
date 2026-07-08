@@ -48,7 +48,29 @@
   </style>
 </head>
 <body class="text-gray-200 min-h-screen font-sans">
-<div id="app" class="max-w-[1600px] mx-auto p-4 space-y-4">
+<div class="flex min-h-screen">
+
+  <!-- Project sidebar -->
+  <aside class="w-52 shrink-0 card border-r border-[#23232e] p-3 space-y-2 min-h-screen">
+    <div class="flex items-center justify-between mb-1">
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Projects</h2>
+      <button id="btnNewProject" class="text-xs px-1.5 py-0.5 rounded bg-brand-600 hover:bg-brand-500 text-white font-bold leading-none">+</button>
+    </div>
+    <div id="projectList" class="space-y-1"></div>
+    <!-- new project form (hidden by default) -->
+    <div id="newProjectForm" class="hidden space-y-2 pt-2 border-t border-[#23232e] mt-2">
+      <input id="newProjName" placeholder="Name" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500" />
+      <input id="newProjPath" placeholder="/path/to/folder" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 mono" />
+      <textarea id="newProjGoal" rows="2" placeholder="Goal…" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-none"></textarea>
+      <div class="flex gap-2">
+        <button id="btnCreateProject" class="flex-1 px-2 py-1 text-xs rounded bg-green-600 hover:bg-green-500 text-white font-medium">Create</button>
+        <button id="btnCancelProject" class="px-2 py-1 text-xs rounded bg-[#2a2a36] hover:bg-[#363645] text-gray-400">Cancel</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <div id="app" class="flex-1 max-w-[1500px] mx-auto p-4 space-y-4">
 
   <!-- Header -->
   <header class="flex items-center justify-between">
@@ -165,6 +187,7 @@
         <button id="btnPause" class="flex-1 px-3 py-1.5 text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white font-medium">Pause</button>
         <button id="btnStop" class="flex-1 px-3 py-1.5 text-xs rounded bg-red-600 hover:bg-red-500 text-white font-medium">Stop</button>
       </div>
+      <button id="btnStopAfterCycle" class="w-full px-3 py-1.5 text-xs rounded bg-[#2a2a36] hover:bg-amber-900 text-gray-400 hover:text-amber-300 font-medium border border-[#363645]">Stop after this cycle</button>
       <div id="orchError" class="text-xs text-red-400 hidden"></div>
     </section>
   </div>
@@ -198,15 +221,15 @@
       </div>
     </section>
 
-    <!-- Journal -->
+    <!-- Backlog (the agent's plan) -->
     <section class="card rounded-lg p-4">
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Journal</h2>
-      <div id="journalFeed" class="space-y-1.5 text-xs max-h-80 overflow-y-auto">
-        <div class="text-gray-600">no journal entries</div>
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Backlog <span class="text-gray-600 normal-case">(agent's plan)</span></h2>
+      <div id="backlogList" class="space-y-1 text-xs max-h-60 overflow-y-auto">
+        <div class="text-gray-600">no backlog yet</div>
       </div>
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Tasks</h2>
-      <div id="taskList" class="space-y-1 text-xs max-h-40 overflow-y-auto">
-        <div class="text-gray-600">no tasks</div>
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Reflections <span class="text-gray-600 normal-case">(memory)</span></h2>
+      <div id="reflectionsList" class="space-y-1.5 text-xs max-h-48 overflow-y-auto">
+        <div class="text-gray-600">no reflections yet</div>
       </div>
     </section>
   </div>
@@ -237,7 +260,8 @@
   <footer class="text-center text-xs text-gray-600 py-2">
     Solo Agent v0.1 · <span id="wsStatus">disconnected</span>
   </footer>
-</div>
+  </div><!-- /#app -->
+</div><!-- /.flex (sidebar + main) -->
 
 <script>
 // ============================================================================
@@ -312,11 +336,10 @@ async function getJSON(path) {
 }
 
 async function pollAll() {
-  const [health, metrics, slots, orch, activity, directives, state] = await Promise.all([
+  const [health, metrics, slots, orch, activity, directives] = await Promise.all([
     getJSON('/api/health'), getJSON('/api/metrics'), getJSON('/api/slots'),
     getJSON('/api/orchestrator/state'), getJSON('/api/agent/activity?limit=30'),
     getJSON('/api/agent/directives'),
-    getJSON('/api/state/tasks'),
   ]);
   if (health) renderHealth(health);
   if (metrics?.metrics) renderMetrics(metrics.metrics);
@@ -324,7 +347,7 @@ async function pollAll() {
   if (orch) renderOrchestrator(orch);
   if (activity) renderActivity(activity.events || []);
   if (directives) renderDirectives(directives.directives || []);
-  if (state) renderTasks(state.tasks || []);
+  renderBacklogReflections();
 }
 
 function handleSnapshot(snap) {
@@ -416,6 +439,17 @@ function renderOrchestrator(o) {
   else { errEl.classList.add('hidden'); }
   // drive the timeline
   renderTimeline(o.phase);
+  // stop-after-cycle button state
+  const sacBtn = $('btnStopAfterCycle');
+  if (o.stop_after_cycle) {
+    sacBtn.dataset.active = '1';
+    sacBtn.className = 'w-full px-3 py-1.5 text-xs rounded bg-amber-900 text-amber-300 font-medium border border-amber-700 pulse-dot';
+    sacBtn.textContent = 'Stopping after this cycle… (click to cancel)';
+  } else {
+    sacBtn.dataset.active = '0';
+    sacBtn.className = 'w-full px-3 py-1.5 text-xs rounded bg-[#2a2a36] hover:bg-amber-900 text-gray-400 hover:text-amber-300 font-medium border border-[#363645]';
+    sacBtn.textContent = 'Stop after this cycle';
+  }
   // project path + goal — only update fields the user isn't editing
   if (o.project_path && document.activeElement !== $('projectPath')) {
     $('projectPath').value = o.project_path;
@@ -447,13 +481,6 @@ function renderDirectives(dirs) {
     </div>`).join('');
 }
 
-function renderTasks(tasks) {
-  if (!tasks.length) return;
-  const marks = { done: '✓', todo: '○', in_progress: '◐', blocked: '✗' };
-  const colors = { done: 'text-green-400', todo: 'text-gray-500', in_progress: 'text-blue-400', blocked: 'text-red-400' };
-  $('taskList').innerHTML = tasks.map(t => `<div class="${colors[t.status]||''}"><span class="mono">${marks[t.status]||'○'}</span> ${esc(t.text)}</div>`).join('');
-}
-
 // ============================================================================
 // Actions
 // ============================================================================
@@ -473,6 +500,19 @@ $('dirInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('dirSe
 $('btnStart').onclick = () => fetch('/api/orchestrator/start', {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
 $('btnPause').onclick = () => fetch('/api/orchestrator/pause', {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
 $('btnStop').onclick  = () => fetch('/api/orchestrator/stop',  {method:'POST'}).then(()=>getJSON('/api/orchestrator/state').then(renderOrchestrator));
+
+// stop-after-cycle toggle
+$('btnStopAfterCycle').onclick = async () => {
+  const btn = $('btnStopAfterCycle');
+  if (btn.dataset.active === '1') {
+    await fetch('/api/orchestrator/cancel-stop-after-cycle', {method:'POST'});
+  } else {
+    await fetch('/api/orchestrator/stop-after-cycle', {method:'POST'});
+  }
+  const o = await getJSON('/api/orchestrator/state');
+  if (o) renderOrchestrator(o);
+};
+
 $('btnSetPath').onclick = async () => {
   // send both goal + path together so they're set in one call
   const body = {};
@@ -488,12 +528,80 @@ $('btnSetPath').onclick = async () => {
   if (d.goal != null) $('goalText').value = d.goal;
 };
 
-// periodic orchestrator + cycle refresh (independent of ws)
+// --- Project sidebar ---
+$('btnNewProject').onclick = () => {
+  $('newProjectForm').classList.toggle('hidden');
+};
+$('btnCancelProject').onclick = () => {
+  $('newProjectForm').classList.add('hidden');
+};
+$('btnCreateProject').onclick = async () => {
+  const name = $('newProjName').value.trim();
+  const path = $('newProjPath').value.trim();
+  const goal = $('newProjGoal').value.trim();
+  if (!name || !path) { alert('Name and path are required'); return; }
+  const r = await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name, project_path: path, goal})});
+  const d = await r.json();
+  if (!r.ok) { alert(d.detail || 'failed to create project'); return; }
+  // activate the new project
+  await fetch(`/api/projects/${d.project.id}/activate`, {method:'POST'});
+  $('newProjectForm').classList.add('hidden');
+  $('newProjName').value = ''; $('newProjPath').value = ''; $('newProjGoal').value = '';
+  await refreshProjects();
+  await pollAll();
+};
+
+async function refreshProjects() {
+  const d = await getJSON('/api/projects');
+  if (!d) return;
+  const active = d.active_project_id;
+  $('projectList').innerHTML = (d.projects || []).map(p => {
+    const dotColors = { reflect:'bg-blue-500', plan:'bg-cyan-500', execute:'bg-purple-500', verify:'bg-yellow-500', record:'bg-green-500', idle:'bg-gray-600', paused:'bg-orange-500', stopped:'bg-gray-600', error:'bg-red-500' };
+    const activeCls = p.is_active ? 'border-brand-600 bg-[#1e1e28]' : 'border-transparent hover:bg-[#1a1a22]';
+    const pulse = ['reflect','plan','execute','verify'].includes(p.orch_phase) ? 'pulse-dot' : '';
+    return `<div class="project-row flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer border ${activeCls}" data-pid="${p.id}">
+      <span class="w-2 h-2 rounded-full ${dotColors[p.orch_phase]||'bg-gray-600'} ${pulse}"></span>
+      <span class="text-xs ${p.is_active ? 'text-gray-200 font-medium' : 'text-gray-400'} truncate">${esc(p.name)}</span>
+    </div>`;
+  }).join('');
+  // wire click handlers
+  document.querySelectorAll('.project-row').forEach(el => {
+    el.onclick = async () => {
+      const pid = el.dataset.pid;
+      if (pid === active) return;
+      await fetch(`/api/projects/${pid}/activate`, {method:'POST'});
+      await refreshProjects();
+      await pollAll();
+    };
+  });
+}
+
+// render backlog + reflections from project_path
+async function renderBacklogReflections() {
+  const [bl, ref] = await Promise.all([
+    getJSON('/api/state/backlog'),
+    getJSON('/api/state/reflections'),
+  ]);
+  if (bl?.tasks?.length) {
+    const marks = { done: '✓', todo: '○', in_progress: '◐', blocked: '✗' };
+    const colors = { done: 'text-green-400', todo: 'text-gray-400', in_progress: 'text-blue-400', blocked: 'text-red-400' };
+    $('backlogList').innerHTML = bl.tasks.map(t => `<div class="${colors[t.status]||''}"><span class="mono">${marks[t.status]||'○'}</span> ${esc(t.text)}</div>`).join('');
+  } else {
+    $('backlogList').innerHTML = '<div class="text-gray-600">no backlog yet</div>';
+  }
+  if (ref?.entries?.length) {
+    $('reflectionsList').innerHTML = ref.entries.slice(-8).reverse().map(e => `<div class="text-gray-400 border-l-2 border-[#2a2a36] pl-2">${esc(e.text)}</div>`).join('');
+  }
+}
+
+// periodic orchestrator + cycle + project refresh (independent of ws)
 setInterval(async () => {
   const o = await getJSON('/api/orchestrator/state');
   if (o) renderOrchestrator(o);
   const c = await getJSON('/api/orchestrator/cycles?limit=20');
   if (c?.cycles) renderCycles(c.cycles);
+  refreshProjects();
+  renderBacklogReflections();
 }, 3000);
 
 function renderCycles(cycles) {
@@ -519,6 +627,8 @@ getJSON('/api/props').then(p => {
 // kick off
 connectWS();
 pollAll();
+refreshProjects();
+renderBacklogReflections();
 </script>
 </body>
 </html>

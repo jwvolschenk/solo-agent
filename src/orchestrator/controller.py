@@ -19,7 +19,10 @@ from datetime import datetime
 from typing import Optional
 
 from ..config import settings
-from ..db import get_orch_state, insert_activity, insert_cycle, set_orch_state, update_cycle
+from ..db import (
+    get_active_project, get_orch_state, insert_activity, insert_cycle,
+    set_orch_state, update_cycle, fetch_project, set_active_project, update_project,
+)
 from ..models import ActivityEvent, CycleRecord, OrchestratorState
 from ..state_reader import parse_tasks
 from . import artifacts, budget, guardrails, prompts
@@ -41,48 +44,105 @@ log = logging.getLogger("solo.controller")
 
 
 class OrchestratorController:
-    """Drives the Ralph loop. Single instance, started in app lifespan."""
+    """Drives the Ralph loop. Single instance, started in app lifespan.
+
+    Project-aware: holds an active_project_id and reads project-specific config
+    (goal, project_path, verify_command) from the projects table. State is
+    persisted per-project so each project has its own cycle counter, phase, and
+    stall history.
+    """
 
     def __init__(self) -> None:
         self.state = OrchestratorState()
         self._task: Optional[asyncio.Task] = None
         self._current_cycle_id: Optional[int] = None
+        self.active_project_id: Optional[str] = None
+        # restore the active project + its state on startup
+        self.active_project_id = get_active_project()
+        if self.active_project_id:
+            self._load_project_settings(self.active_project_id)
         self._resume()
 
-    # ---- lifecycle -----------------------------------------------------------
+    # ---- project management ---------------------------------------------------
+
+    def _load_project_settings(self, project_id: str) -> bool:
+        """Load a project's config into the live settings object so all the
+        downstream consumers (git_ops, runner, verify, artifacts) pick it up.
+        Returns False if the project doesn't exist."""
+        row = fetch_project(project_id)
+        if row is None:
+            return False
+        settings.project_path = type(settings.project_path)(row["project_path"])
+        settings.goal = row["goal"]
+        settings.verify_command = row["verify_command"]
+        settings.work_branch = row["work_branch"]
+        return True
+
+    async def switch_project(self, project_id: str) -> str:
+        """Switch the active project. Stops the loop if running, loads the new
+        project's config + state into memory."""
+        # stop current loop if running
+        if self.state.running:
+            await self.stop()
+        # persist current state to the old project's key before switching
+        if self.active_project_id and self.active_project_id != project_id:
+            self._persist()
+        # load new project
+        if not self._load_project_settings(project_id):
+            return f"project {project_id} not found"
+        self.active_project_id = project_id
+        set_active_project(project_id)
+        # reset transient state
+        budget.reset_cycle()
+        guardrails.loop_detector.reset()
+        guardrails.no_progress.reset()
+        # resume the new project's persisted state
+        self._resume()
+        self.state.project_id = project_id
+        self._persist()
+        log.info("switched to project %s (path=%s)", project_id, settings.project_path)
+        return "switched"
 
     def _resume(self) -> None:
-        """Restore state from SQLite so we resume after a restart."""
-        persisted = get_orch_state()
+        """Restore state for the active project from SQLite."""
+        pid = self.active_project_id or ""
+        persisted = get_orch_state(pid)
         if persisted:
             try:
                 self.state = OrchestratorState(**persisted)
                 log.info(
-                    "resumed orchestrator state: cycle=%d phase=%s",
-                    self.state.cycle_number, self.state.phase,
+                    "resumed state for project %s: cycle=%d phase=%s",
+                    pid or "(none)", self.state.cycle_number, self.state.phase,
                 )
             except Exception as e:
                 log.warning("could not resume state (%s); starting fresh", e)
-        # if we were mid-run when killed, don't auto-resume running; require explicit start
+                self.state = OrchestratorState()
+        else:
+            self.state = OrchestratorState()
+        # never auto-resume a mid-run; require explicit start
         if self.state.phase not in ("idle", "stopped", "paused", "error"):
             self.state.phase = "paused"
             self.state.running = False
+        self.state.project_id = pid or None
+
+    # ---- lifecycle -----------------------------------------------------------
 
     async def start(self) -> str:
-        """Begin cycling. Returns a status message.
-
-        Auto-initializes git on an empty/non-git project_path (the from-scratch
-        case). Requires a goal to be set — without one, the loop has nothing to
-        drive toward.
-        """
+        """Begin cycling. Requires an active project with a goal."""
         # require a goal
         if not settings.goal.strip():
-            msg = "no goal set — set one via GOAL env or the dashboard before starting"
+            msg = "no goal set — set one on the active project before starting"
             log.error(msg)
             self.state.phase = "error"
             self.state.last_error = msg
             self._persist()
             return msg
+
+        # load the project's stop_after_cycle flag into state
+        if self.active_project_id:
+            row = fetch_project(self.active_project_id)
+            if row:
+                self.state.stop_after_cycle = bool(row["stop_after_cycle"])
 
         # auto-init git if needed (from-scratch case)
         await ensure_repo()
@@ -92,8 +152,7 @@ class OrchestratorController:
         if self._task is not None and not self._task.done():
             return "already running"
         guardrails.kill_switch.clear()
-        # wire the runner's tool calls into the activity feed so the dashboard
-        # shows what the agent is doing (file edits, shell, etc.) in real time
+        # wire the runner's tool calls into the activity feed
         set_activity_hook(lambda t, m, meta: insert_activity(ActivityEvent(type=t, message=m, metadata=meta)))  # type: ignore[arg-type]
         self.state.running = True
         self.state.phase = "idle"
@@ -159,6 +218,19 @@ class OrchestratorController:
 
             if not self.state.running:
                 break
+            # soft-stop-after-cycle: the cycle finished cleanly; now stop before
+            # starting a new one so the human can evaluate the workspace.
+            if self.state.stop_after_cycle:
+                log.info("stop_after_cycle flag tripped — stopping after cycle %d", self.state.cycle_number)
+                self.state.running = False
+                self.state.phase = "stopped"
+                self.state.stop_after_cycle = False  # clear so a later Start runs normally
+                # also clear the flag on the project record
+                if self.active_project_id:
+                    update_project(self.active_project_id, stop_after_cycle=0)
+                set_activity_hook(None)
+                self._persist()
+                break
             # brief breather between cycles
             try:
                 await asyncio.sleep(settings.inter_cycle_delay_sec)
@@ -185,7 +257,7 @@ class OrchestratorController:
         self.state.current_task = None
         self.state.agent_session_id = None
 
-        rec = CycleRecord(cycle_number=cycle, phase="reflect")
+        rec = CycleRecord(cycle_number=cycle, phase="reflect", project_id=self.active_project_id)
         self._current_cycle_id = insert_cycle(rec)
         self.state.phase = "reflect"
         self._persist()
@@ -331,7 +403,7 @@ class OrchestratorController:
         """Peek the most recent cycle's lines_changed from DB for the no-progress detector."""
         from ..db import fetch_cycles
 
-        rows = fetch_cycles(limit=1)
+        rows = fetch_cycles(limit=1, project_id=self.active_project_id or "")
         if rows:
             try:
                 return int(rows[0]["lines_changed"])
@@ -376,7 +448,8 @@ class OrchestratorController:
 
     def _persist(self) -> None:
         self.state.updated_at = datetime.utcnow()
-        set_orch_state(self.state.model_dump(mode="json"))
+        self.state.project_id = self.active_project_id
+        set_orch_state(self.state.model_dump(mode="json"), self.active_project_id or "")
 
     def snapshot(self) -> OrchestratorState:
         return self.state

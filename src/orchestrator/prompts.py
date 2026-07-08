@@ -12,8 +12,9 @@ from __future__ import annotations
 
 ORIENT = (
     "Read SOLO_AGENT.md (your operating protocol), GOAL.md (the project's "
-    "overarching goal), and reflections.md (prior-cycle memory). You are a "
-    "fresh session in an autonomous loop; those files are how you get oriented."
+    "overarching goal), directives.md (human guidance — pending ones are "
+    "priority), and reflections.md (prior-cycle memory). You are a fresh "
+    "session in an autonomous loop; those files are how you get oriented."
 )
 
 
@@ -27,6 +28,11 @@ GOAL.md. What's the highest-value work to do next?
   and first concrete features.
 - If the project exists, look for bugs, missing features toward the goal,
   weak tests, and clear improvements.
+
+IMPORTANT: Check directives.md for any `status: pending` entries. If there are
+any, add them to the top of backlog.md as the highest-priority tasks (the human
+queued them mid-loop to steer you). Mark their status to `acknowledged` once
+you've queued them.
 
 Append each candidate as a new `- [ ]` line in backlog.md. Each task must be
 small (~one session) and independently completable. Don't duplicate items

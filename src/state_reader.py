@@ -114,6 +114,18 @@ def read_plan() -> StateFile:
     return _read_file(p)
 
 
+def read_backlog() -> StateFile:
+    """Read backlog.md from project_path (where the orchestrator's agent writes it)."""
+    p = Path(settings.project_path) / "backlog.md"
+    return _read_with(p, parse_tasks, "tasks")
+
+
+def read_reflections() -> StateFile:
+    """Read reflections.md from project_path (the agent's episodic memory)."""
+    p = Path(settings.project_path) / "reflections.md"
+    return _read_with(p, parse_journal, "entries")
+
+
 def read_file(name: str) -> StateFile:
     """Read an arbitrary state file by name (no structured parsing)."""
     # disallow escaping state_dir

@@ -63,23 +63,37 @@ Since your session is wiped each time, your only memory is these files:
 |---|---|---|
 | `GOAL.md` | the overarching goal for the project | read every session — it drives all work |
 | `SOLO_AGENT.md` | this protocol | read first, every session |
+| `directives.md` | human guidance queued for you | read every session — pending directives are PRIORITY work |
 | `reflections.md` | what's been tried, what worked/failed | read second — avoid repeating failures |
 | `backlog.md` | the task list | REFLECT adds to it; EXECUTE pulls the next `- [ ]` task |
 | `skills/INDEX.md` | reusable snippets/tests the loop produced | consult before implementing |
+
+## Directives (human steering)
+
+`directives.md` contains guidance queued by a human mid-loop. Each has a status:
+`pending` → `acknowledged` → `done`.
+
+- **Read it every session.** Pending (`status: pending`) directives take priority
+  over backlog tasks — address them first.
+- When you start working on a directive, edit its `status:` line to `acknowledged`.
+- When you complete it, edit the `status:` line to `done`.
+- The human uses these to steer you: "use JWT not sessions", "focus on tests next",
+  "this bug is critical", etc.
 
 ## Rules (non-negotiable)
 
 1. **Fresh context.** Never assume state from a prior session — re-read the files.
 2. **Advance the goal.** Every task should move the project toward GOAL.md.
-3. **Stay in scope.** EXECUTE does ONE task. Don't refactor unrelated code.
-4. **Don't mark tasks done in backlog.md.** The orchestrator advances state.
+3. **Directives are priority.** Address pending directives before new backlog work.
+4. **Stay in scope.** EXECUTE does ONE task. Don't refactor unrelated code.
+5. **Don't mark tasks done in backlog.md.** The orchestrator advances state.
    You may not check off backlog items or rewrite them to look complete.
-5. **Never touch `main` / run git unless told.** The orchestrator manages git.
-6. **Verify your own work.** If there's no orchestrator gate, run the project's
+6. **Never touch `main` / run git unless told.** The orchestrator manages git.
+7. **Verify your own work.** If there's no orchestrator gate, run the project's
    build/test/lint yourself before stopping. Don't claim success you didn't check.
-7. **Be honest.** If a task is blocked, invalid, or you can't complete it — say so
+8. **Be honest.** If a task is blocked, invalid, or you can't complete it — say so
    clearly in your final message. Don't pretend success.
-8. **Reverts can happen.** If an orchestrator gate fails, your work may be reverted.
+9. **Reverts can happen.** If an orchestrator gate fails, your work may be reverted.
    That's normal — read reflections.md to learn why.
 
 ## Stop signal
@@ -149,6 +163,17 @@ def ensure_artifacts() -> None:
             "# Append-only episodic memory. After each cycle, the orchestrator\n"
             "# records what was attempted and the verify outcome. Read at the\n"
             "# start of each fresh session so the agent doesn't repeat failures.\n\n",
+            encoding="utf-8",
+        )
+    # directives.md: created with a header if missing. The directives module owns
+    # the per-block format; we just ensure the file exists so the agent sees it.
+    dir_path = _workspace() / "directives.md"
+    if not dir_path.exists():
+        dir_path.write_text(
+            "# Directives\n\n"
+            "# Human guidance queued for the agent. Each directive has a status:\n"
+            "# pending -> acknowledged -> done. The agent reads this every session\n"
+            "# and advances the status line as it works through them.\n\n",
             encoding="utf-8",
         )
     skills_dir().mkdir(parents=True, exist_ok=True)

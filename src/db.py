@@ -95,7 +95,25 @@ CREATE TABLE IF NOT EXISTS token_usage (
     day    TEXT PRIMARY KEY,   -- YYYY-MM-DD
     tokens INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS projects (
+    id              TEXT PRIMARY KEY,      -- slug e.g. "brain-buzz"
+    name            TEXT NOT NULL,
+    goal            TEXT NOT NULL DEFAULT '',
+    project_path    TEXT NOT NULL,
+    verify_command  TEXT NOT NULL DEFAULT '',
+    work_branch     TEXT NOT NULL DEFAULT 'solo-agent/auto',
+    stop_after_cycle INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
 """
+
+# Idempotent migrations for columns added after initial release.
+# Wrapped in try/except so re-running init_db() on an existing DB is safe.
+_MIGRATIONS = [
+    "ALTER TABLE cycles ADD COLUMN project_id TEXT",
+]
 
 
 # We use short-lived per-call connections (check_same_thread=False) rather than
@@ -124,6 +142,12 @@ def init_db(path: Optional[Path | str] = None) -> None:
     conn = _connect(path)
     try:
         conn.executescript(SCHEMA)
+        # run idempotent migrations (ignore "duplicate column" on re-run)
+        for sql in _MIGRATIONS:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()
     finally:
         conn.close()
@@ -310,13 +334,14 @@ def insert_cycle(rec) -> int:
     with write_conn() as c:
         cur = c.execute(
             """INSERT INTO cycles
-               (cycle_number, phase, started_at, ended_at, outcome, snapshot_sha,
+               (cycle_number, phase, project_id, started_at, ended_at, outcome, snapshot_sha,
                 head_sha, lines_changed, tokens_used, tasks_attempted, tasks_passed,
                 error, summary, agent_session_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rec.cycle_number,
                 rec.phase,
+                getattr(rec, "project_id", None),
                 rec.started_at.isoformat(),
                 rec.ended_at.isoformat() if rec.ended_at else None,
                 rec.outcome,
@@ -350,7 +375,12 @@ def update_cycle(cycle_id: int, **fields) -> None:
         c.commit()
 
 
-def fetch_cycles(limit: int = 50) -> list[sqlite3.Row]:
+def fetch_cycles(limit: int = 50, project_id: str = "") -> list[sqlite3.Row]:
+    if project_id:
+        return query_all(
+            "SELECT * FROM cycles WHERE project_id = ? ORDER BY cycle_number DESC LIMIT ?",
+            (project_id, limit),
+        )
     return query_all(
         "SELECT * FROM cycles ORDER BY cycle_number DESC LIMIT ?", (limit,)
     )
@@ -359,8 +389,9 @@ def fetch_cycles(limit: int = 50) -> list[sqlite3.Row]:
 # --- orchestrator key/value state (single logical document, JSON-encoded) ----
 
 
-def get_orch_state() -> dict[str, Any]:
-    row = query_one("SELECT value FROM orch_state WHERE key = 'state'")
+def get_orch_state(project_id: str = "") -> dict[str, Any]:
+    key = f"state:{project_id}" if project_id else "state"
+    row = query_one("SELECT value FROM orch_state WHERE key = ?", (key,))
     if row is None:
         return {}
     import json
@@ -371,15 +402,16 @@ def get_orch_state() -> dict[str, Any]:
         return {}
 
 
-def set_orch_state(state: dict[str, Any]) -> None:
+def set_orch_state(state: dict[str, Any], project_id: str = "") -> None:
     import json
 
+    key = f"state:{project_id}" if project_id else "state"
     payload = json.dumps(state, default=str)
     with write_conn() as c:
         c.execute(
-            """INSERT INTO orch_state (key, value) VALUES ('state', ?)
+            """INSERT INTO orch_state (key, value) VALUES (?, ?)
                ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
-            (payload,),
+            (key, payload),
         )
         c.commit()
 
@@ -403,3 +435,71 @@ def add_tokens(day: str, tokens: int) -> int:
 def tokens_for_day(day: str) -> int:
     row = query_one("SELECT tokens FROM token_usage WHERE day = ?", (day,))
     return int(row["tokens"]) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+
+def insert_project(p) -> None:
+    """Insert a new project row. p must have: id, name, goal, project_path,
+    verify_command, work_branch, stop_after_cycle, created_at, updated_at."""
+    with write_conn() as c:
+        c.execute(
+            """INSERT INTO projects
+               (id, name, goal, project_path, verify_command, work_branch,
+                stop_after_cycle, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                p["id"], p["name"], p["goal"], p["project_path"],
+                p["verify_command"], p["work_branch"],
+                int(p["stop_after_cycle"]), p["created_at"], p["updated_at"],
+            ),
+        )
+        c.commit()
+
+
+def update_project(project_id: str, **fields) -> None:
+    """Update one or more fields on a project."""
+    if not fields:
+        return
+    allowed = {"name", "goal", "project_path", "verify_command", "work_branch", "stop_after_cycle", "updated_at"}
+    cols = {k: v for k, v in fields.items() if k in allowed}
+    if not cols:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in cols)
+    vals = list(cols.values()) + [project_id]
+    with write_conn() as c:
+        c.execute(f"UPDATE projects SET {set_clause} WHERE id = ?", vals)
+        c.commit()
+
+
+def fetch_project(project_id: str):
+    return query_one("SELECT * FROM projects WHERE id = ?", (project_id,))
+
+
+def fetch_projects() -> list[sqlite3.Row]:
+    return query_all("SELECT * FROM projects ORDER BY created_at ASC")
+
+
+def delete_project(project_id: str) -> None:
+    with write_conn() as c:
+        c.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        c.commit()
+
+
+def set_active_project(project_id: str) -> None:
+    """Store the active project id in the orch_state KV table."""
+    with write_conn() as c:
+        c.execute(
+            """INSERT INTO orch_state (key, value) VALUES ('active_project', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (project_id,),
+        )
+        c.commit()
+
+
+def get_active_project() -> Optional[str]:
+    row = query_one("SELECT value FROM orch_state WHERE key = 'active_project'")
+    return row["value"] if row else None

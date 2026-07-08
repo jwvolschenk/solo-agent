@@ -35,7 +35,7 @@ class StateWatcher:
             return
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="state-watcher")
-        log.info("state watcher started (watching %s)", settings.state_dir)
+        log.info("state watcher started (watching %s)", settings.project_path)
 
     async def stop(self) -> None:
         self._stop.set()

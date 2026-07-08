@@ -6,7 +6,9 @@ from fastapi import APIRouter, HTTPException
 
 from ..state_reader import (
     list_summaries,
+    read_backlog,
     read_plan,
+    read_reflections,
     read_summary,
     read_tasks,
     read_journal,
@@ -41,6 +43,18 @@ async def get_journal() -> dict:
 @api_router.get("/plan")
 async def get_plan() -> dict:
     return _state_dict(read_plan())
+
+
+@api_router.get("/backlog")
+async def get_backlog() -> dict:
+    """The agent's live task list (backlog.md in project_path)."""
+    return _state_dict(read_backlog())
+
+
+@api_router.get("/reflections")
+async def get_reflections() -> dict:
+    """The agent's episodic memory (reflections.md in project_path)."""
+    return _state_dict(read_reflections())
 
 
 @api_router.get("/summaries")

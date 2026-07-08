@@ -182,6 +182,7 @@ class CycleRecord(BaseModel):
     id: Optional[int] = None
     cycle_number: int
     phase: str = "idle"  # current/last phase
+    project_id: Optional[str] = None
     started_at: datetime = Field(default_factory=datetime.utcnow)
     ended_at: Optional[datetime] = None
     outcome: CycleOutcome = "running"
@@ -215,6 +216,44 @@ class OrchestratorState(BaseModel):
     consecutive_fail_cycles: int = 0
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     agent_session_id: Optional[str] = None
+    project_id: Optional[str] = None
+    stop_after_cycle: bool = False  # soft-stop: finish this cycle then stop
+
+
+# ============================================================================
+# Projects
+# ============================================================================
+
+
+class Project(BaseModel):
+    """A project the orchestrator can work on. Persisted in DB."""
+
+    id: str  # slug
+    name: str
+    goal: str = ""
+    project_path: str
+    verify_command: str = ""
+    work_branch: str = "solo-agent/auto"
+    stop_after_cycle: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # denormalized fields for the UI (not stored in the projects table):
+    is_active: bool = False
+    orch_phase: str = "idle"
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    goal: str = ""
+    project_path: str = Field(..., min_length=1)
+    verify_command: str = ""
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    goal: Optional[str] = None
+    project_path: Optional[str] = None
+    verify_command: Optional[str] = None
 
 
 # ============================================================================

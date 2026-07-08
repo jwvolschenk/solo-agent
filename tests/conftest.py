@@ -137,6 +137,11 @@ def tmp_settings(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config.settings, "state_dir", state_dir)
     monkeypatch.setattr(config.settings, "db_path", db_path)
+    # directives.md + backlog.md now live in project_path, not state_dir.
+    # Point project_path at the tmp workspace so tests don't touch the real repo.
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    monkeypatch.setattr(config.settings, "project_path", project_path)
     # also patch the directives module's path lookup which captured settings at import
     from src import directives as dirmod
     monkeypatch.setattr(dirmod, "settings", config.settings)

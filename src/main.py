@@ -69,12 +69,13 @@ from .routes import (  # noqa: E402 (import after app for circular-free wiring)
     health,
     metrics,
     orchestrator,
+    projects,
     server,
     state,
     ws as ws_route,
 )
 
-for mod in (health, metrics, server, agent, directives, state, orchestrator, config_route, ws_route):
+for mod in (health, metrics, server, agent, directives, state, orchestrator, config_route, projects, ws_route):
     app.include_router(mod.api_router)
 
 
