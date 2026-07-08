@@ -46,7 +46,8 @@ class AgentResult:
 
 
 def _new_session_id() -> str:
-    """Generate a stable session id for OpenCode's --session flag."""
+    """Generate a stable session id. Used only if the command template
+    references {session}; fresh goals (the Ralph default) don't pass --session."""
     return f"solo-{uuid.uuid4().hex[:12]}"
 
 
@@ -54,16 +55,23 @@ def build_command(prompt: str, session_id: str, title: str) -> list[str]:
     """Render settings.agent_command into an argv list.
 
     Substitutions: {repo} {session} {title} {model} {prompt}.
-    The prompt is substituted as a single quoted argv element.
+    Only placeholders actually present in the template are substituted, so the
+    default template (no {session}) works without error and a custom template
+    that includes {session} still gets it. The prompt is passed as one argv
+    element (shlex reconstructs the quoting).
     """
-    rendered = settings.agent_command.format(
-        repo=str(settings.project_path),
-        session=session_id,
-        title=title,
-        model=settings.agent_model,
-        prompt=prompt,
-    )
-    return shlex.split(rendered)
+    subs = {
+        "repo": str(settings.project_path),
+        "session": session_id,
+        "title": title,
+        "model": settings.agent_model,
+        "prompt": prompt,
+    }
+    template = settings.agent_command
+    # Only substitute known placeholders so braces in the prompt can't break it.
+    for key, val in subs.items():
+        template = template.replace("{" + key + "}", val)
+    return shlex.split(template)
 
 
 async def run_goal(
@@ -108,36 +116,53 @@ async def run_goal(
     result.stderr = stderr_b.decode("utf-8", errors="replace")
 
     # parse the JSON event stream from stdout
-    result.events, result.final_message, result.tokens_used = _parse_event_stream(result.stdout)
+    result.events, result.final_message, result.tokens_used, stopped = _parse_event_stream(result.stdout)
     budget.budget.add(result.tokens_used)
 
-    # determine success: a final message + no error event + no timeout
-    has_error = any(e.get("type") == "session.error" for e in result.events)
+    # Determine success. OpenCode signals clean completion via a step_finish
+    # event with part.reason == "stop" (the agent chose to stop). We also accept
+    # a captured final message as a weaker signal. An error event OR no stop
+    # signal means failure. (Exit code is unreliable — issue #14551.)
+    has_error = any(e.get("type") == "error" or e.get("type") == "session.error" for e in result.events)
     has_message = bool(result.final_message)
-    result.ok = has_message and not has_error
+    result.ok = (stopped or has_message) and not has_error
     if has_error:
-        result.error = next(
-            (str(e.get("error", {}).get("message", "session error"))
-             for e in result.events if e.get("type") == "session.error"),
-            "session error",
-        )
+        err_events = [e for e in result.events if e.get("type") in ("error", "session.error")]
+        # error message may be in part.error.message or part.message or a top-level string
+        for e in err_events:
+            part = e.get("part") or {}
+            msg = (part.get("error") or {}).get("message") or part.get("message") or str(e.get("message", ""))
+            if msg:
+                result.error = str(msg)
+                break
+        if not result.error:
+            result.error = "session error"
+    elif not result.ok:
+        result.error = "agent did not signal completion (no 'stop' step_finish, no final message)"
     log.info(
-        "agent finished: ok=%s tokens=%d events=%d final=%r",
-        result.ok, result.tokens_used, len(result.events), result.final_message[:80],
+        "agent finished: ok=%s stopped=%s tokens=%d events=%d final=%r",
+        result.ok, stopped, result.tokens_used, len(result.events), result.final_message[:80],
     )
     return result
 
 
-def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int]:
+def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int, bool]:
     """Parse newline-delimited JSON events from agent stdout.
 
-    Returns (events, final_message, total_tokens). Tolerates non-JSON lines
-    (mixed logs) by skipping them. If the agent didn't emit JSON, we fall back
-    to treating the whole stdout as a message.
+    Returns (events, final_message, total_tokens, stopped). Tolerates non-JSON
+    lines (mixed logs) by skipping them.
+
+    OpenCode's actual event schema (verified against v1.17.x):
+      {"type": "text",        "part": {"type":"text", "text": "<msg>"}}    — assistant message
+      {"type": "step_finish", "part": {"reason":"stop"|"tool-calls"|..., "tokens": {"total":N,"input":N,"output":N}}}
+      {"type": "tool_use",    "part": {"tool":"<name>", "state":{"status":"completed",...}}}
+      {"type": "error",       "part": {"error":{"message":"..."}}} or {"message":"..."}
+    Clean completion = a step_finish with part.reason == "stop".
     """
     events: list[dict] = []
     final_message = ""
     total_tokens = 0
+    stopped = False
 
     for line in stdout.splitlines():
         line = line.strip()
@@ -150,28 +175,27 @@ def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int]:
         events.append(event)
 
         etype = event.get("type", "")
-        # token accounting
-        total_tokens += budget.extract_tokens_from_event(event)
+        part = event.get("part") or {}
 
-        # capture the final assistant message
-        if etype == "session.message" or etype == "message":
-            content = event.get("content") or event.get("text")
-            if isinstance(content, list):
-                # OpenCode often nests content as [{type, text}]
-                content = " ".join(
-                    str(c.get("text", "")) for c in content if isinstance(c, dict)
-                )
-            if isinstance(content, str) and content.strip():
-                final_message = content.strip()
-        elif etype == "session.end" and not final_message:
-            # use the end summary if no message was captured
-            final_message = str(event.get("summary", ""))
+        # token accounting — step_finish carries cumulative-ish per-step tokens
+        if etype == "step_finish":
+            tokens = part.get("tokens") or {}
+            total_tokens += budget.extract_tokens_from_event({"usage": tokens})
+            if part.get("reason") == "stop":
+                stopped = True
+
+        # capture the latest assistant text message
+        if etype == "text":
+            text = part.get("text") or event.get("text")
+            if isinstance(text, str) and text.strip():
+                final_message = text.strip()
 
     # fallback: if no JSON events at all, treat stdout (minus noise) as the message
     if not events and stdout.strip():
         final_message = stdout.strip()[-2000:]
+        stopped = True  # assume completion for non-JSON agents (e.g. a stub)
 
-    return events, final_message, total_tokens
+    return events, final_message, total_tokens, stopped
 
 
 async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:

@@ -173,9 +173,14 @@ def tmp_target_repo(tmp_path):
 def mock_agent_script(tmp_path):
     """Write a fake 'agent' script that emits OpenCode-style JSON events + exits.
 
-    The script reads an env var AGENT_MODE to decide its behavior:
-      ok       -> emits a message event then exits 0
-      error    -> emits a session.error then exits 0 (opencode bug: rc 0 on error)
+    Mirrors the real OpenCode event schema (verified v1.17.x):
+      {"type": "text",        "part": {"type":"text", "text": "..."}}
+      {"type": "step_finish", "part": {"reason":"stop", "tokens": {"total":N,...}}}
+      {"type": "error",       "part": {"error":{"message":"..."}}}
+
+    The script reads AGENT_MODE to decide behavior:
+      ok       -> emits a text message + a stop step_finish, then exits 0
+      error    -> emits an error event then exits 0 (opencode bug: rc 0 on error)
       hang     -> sleeps forever (to test timeout/kill)
     """
     script = tmp_path / "mock_agent.py"
@@ -187,11 +192,11 @@ def mock_agent_script(tmp_path):
             time.sleep(10000)
             sys.exit(0)
         if mode == "error":
-            print(json.dumps({"type": "session.error", "error": {"message": "boom"}}))
+            print(json.dumps({"type": "error", "part": {"error": {"message": "boom"}}}))
             sys.exit(0)
-        # ok: emit usage + message + end
-        print(json.dumps({"type": "session.message", "content": [{"type": "text", "text": "DONE: added a test"}], "usage": {"prompt_tokens": 100, "completion_tokens": 50}}))
-        print(json.dumps({"type": "session.end", "summary": "completed"}))
+        # ok: emit assistant text + a clean stop step_finish with token counts
+        print(json.dumps({"type": "text", "part": {"type": "text", "text": "DONE: added a test"}}))
+        print(json.dumps({"type": "step_finish", "part": {"reason": "stop", "tokens": {"total": 150, "input": 100, "output": 50}}}))
         sys.exit(0)
         """))
     script.chmod(0o755)

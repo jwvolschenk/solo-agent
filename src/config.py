@@ -58,11 +58,14 @@ class Settings(BaseSettings):
     work_branch: str = "solo-agent/auto"
     auto_merge_to_base: bool = False
 
-    # The agent command template. Substitutions: {repo} {session} {title} {model} {prompt}.
-    # Default drives OpenCode headlessly. Swap for Aider/custom by editing this string.
+    # The agent command template. Substitutions: {repo} {title} {model} {prompt}.
+    # Default drives OpenCode headlessly with a FRESH session each goal (Ralph
+    # principle — no context carry-over). {session} is available if you want to
+    # add --session/--continue for resumable runs, but we omit it by default
+    # because passing a non-existent session id makes OpenCode error out.
     agent_command: str = (
         "opencode run --auto --format json "
-        "--dir {repo} --session {session} --title {title} --model {model} "
+        "--dir {repo} --title {title} --model {model} "
         '"{prompt}"'
     )
     agent_model: str = "llamacpp/qwen3.6-reap"

@@ -69,22 +69,32 @@ def reset_cycle() -> None:
 def extract_tokens_from_event(event: dict) -> int:
     """Best-effort extraction of token count from an OpenCode JSON event.
 
-    OpenCode's event schema isn't fully documented, so we look in the common
-    spots (usage, tokens, cost fields) across event types. Returns 0 if unknown.
+    Handles both documented and observed schema shapes:
+      - {"usage": {"total_tokens": N}}            (OpenAI-style)
+      - {"tokens": {"total": N, "input": N, ...}} (OpenCode step_finish part.tokens)
+      - {"total_tokens": N} or {"tokens": N}      (plain)
+    Returns 0 if unknown.
     """
     if not isinstance(event, dict):
         return 0
-    for key in ("tokens", "total_tokens"):
+    # direct int fields
+    for key in ("total_tokens", "tokens"):
         v = event.get(key)
         if isinstance(v, int) and v > 0:
             return v
-    usage = event.get("usage")
-    if isinstance(usage, dict):
-        total = usage.get("total_tokens")
-        if isinstance(total, int) and total > 0:
-            return total
-        p = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-        c = usage.get("completion_tokens") or usage.get("output_tokens") or 0
-        if isinstance(p, int) and isinstance(c, int) and (p or c):
-            return p + c
+    # nested usage/tokens dict — accept both total_tokens and total keys
+    for nest_key in ("usage", "tokens"):
+        nest = event.get(nest_key)
+        if isinstance(nest, dict):
+            total = nest.get("total_tokens")
+            if isinstance(total, int) and total > 0:
+                return total
+            total = nest.get("total")
+            if isinstance(total, int) and total > 0:
+                return total
+            # sum input + output if total absent
+            inp = nest.get("input_tokens") or nest.get("input") or 0
+            outp = nest.get("output_tokens") or nest.get("output") or 0
+            if isinstance(inp, int) and isinstance(outp, int) and (inp or outp):
+                return inp + outp
     return 0
