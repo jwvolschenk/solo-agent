@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 from fastapi import APIRouter
 
-from ..collector import collector
+from ..collector import _auth_headers, collector
 from ..config import settings
 from ..parsers import parse_props, parse_slots
 
@@ -30,7 +30,7 @@ async def get_props() -> dict:
     """
     base = settings.llama_server_url.rstrip("/")
     try:
-        async with httpx.AsyncClient(timeout=settings.http_timeout) as c:
+        async with httpx.AsyncClient(timeout=settings.http_timeout, headers=_auth_headers()) as c:
             r = await c.get(f"{base}/props")
             r.raise_for_status()
             props = parse_props(r.json())

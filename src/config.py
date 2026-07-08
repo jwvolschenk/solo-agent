@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # --- llama-server (the thing being monitored) ------------------------------
     llama_server_url: str = "http://localhost:8080"
+    llama_api_key: str = ""  # set if llama-server was started with --api-key
     poll_interval: float = 2.0  # seconds between metric polls
     http_timeout: float = 3.0  # per-request timeout to llama-server
 

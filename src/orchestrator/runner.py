@@ -22,12 +22,25 @@ import shlex
 import signal
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from ..config import settings
 from . import budget
 
 log = logging.getLogger("solo.runner")
+
+# Callback the controller can register so tool-call events become activity log entries.
+# Signature: (type, message, metadata) -> None. Implemented in controller via db.insert_activity.
+ActivityCallback = Callable[[str, str, dict[str, Any]], None]
+
+# Module-level activity hook. None = no activity logging.
+_activity_hook: Optional[ActivityCallback] = None
+
+
+def set_activity_hook(hook: Optional[ActivityCallback]) -> None:
+    """Register a callback invoked for each notable agent action (tool calls)."""
+    global _activity_hook
+    _activity_hook = hook
 
 
 @dataclass
@@ -190,6 +203,15 @@ def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int, bool]:
             if isinstance(text, str) and text.strip():
                 final_message = text.strip()
 
+        # emit activity events for notable tool calls so the dashboard shows what the agent is doing
+        if etype == "tool_use" and _activity_hook is not None:
+            tool = part.get("tool", "unknown")
+            inp = part.get("input") or {}
+            state = part.get("state") or {}
+            # only log completed tool calls (not in-progress), and only the interesting ones
+            if state.get("status") == "completed":
+                _emit_tool_activity(tool, inp)
+
     # fallback: if no JSON events at all, treat stdout (minus noise) as the message
     if not events and stdout.strip():
         final_message = stdout.strip()[-2000:]
@@ -227,3 +249,48 @@ def _redact(argv: list[str]) -> str:
         else:
             out.append(a)
     return " ".join(out)
+
+
+def _emit_tool_activity(tool: str, inp: dict) -> None:
+    """Translate a completed OpenCode tool call into an activity log entry.
+
+    Only fires for tools that represent real, visible actions (file edits, shell,
+    writes). Read-only tools (read, glob, grep, tree) are noisy and skipped.
+    """
+    if _activity_hook is None:
+        return
+    # short path of a file, for display
+    def _short(p: str) -> str:
+        if not isinstance(p, str):
+            return ""
+        parts = p.split("/")
+        return "/".join(parts[-3:]) if len(parts) > 3 else p
+
+    atype = "tool"
+    msg = ""
+    meta: dict[str, Any] = {"tool": tool}
+
+    if tool in ("edit", "write", "write_file", "create_file"):
+        atype = "file"
+        fp = inp.get("filePath") or inp.get("file_path") or inp.get("path") or ""
+        msg = f"{tool} {_short(fp)}"
+        meta["file"] = fp
+    elif tool in ("bash", "shell", "execute"):
+        atype = "tool"
+        cmd = inp.get("command") or inp.get("cmd") or ""
+        msg = f"shell: {str(cmd)[:80]}"
+        meta["command"] = cmd
+    elif tool in ("remove", "delete", "rm"):
+        atype = "file"
+        fp = inp.get("path") or inp.get("filePath") or ""
+        msg = f"delete {_short(fp)}"
+        meta["file"] = fp
+    else:
+        # skip noisy read-only tools (read, glob, grep, tree, search, etc.)
+        return
+
+    if msg:
+        try:
+            _activity_hook(atype, msg, meta)
+        except Exception as e:
+            log.debug("activity hook failed: %s", e)

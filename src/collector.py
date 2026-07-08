@@ -46,7 +46,7 @@ class Collector:
     async def start(self) -> None:
         if self._task is not None:
             return
-        self._client = httpx.AsyncClient(timeout=settings.http_timeout)
+        self._client = httpx.AsyncClient(timeout=settings.http_timeout, headers=_auth_headers())
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="collector")
         log.info("collector started (poll=%.1fs, target=%s)", settings.poll_interval, settings.llama_server_url)
@@ -82,7 +82,7 @@ class Collector:
     async def collect_once(self) -> None:
         """Fetch all four endpoints. Update in-memory state + broadcast."""
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=settings.http_timeout)
+            self._client = httpx.AsyncClient(timeout=settings.http_timeout, headers=_auth_headers())
 
         base = settings.llama_server_url.rstrip("/")
         # Probe health first — if unreachable, short-circuit to offline.
@@ -177,3 +177,14 @@ def _maybe_json(resp: httpx.Response):
         return resp.json()
     except (ValueError, httpx.DecodingError):
         return resp.text
+
+
+def _auth_headers() -> dict[str, str]:
+    """Build the Authorization header if an API key is configured.
+
+    llama-server started with --api-key requires a Bearer token on every
+    endpoint except /health. Without this, /metrics, /slots, /props all 401.
+    """
+    if settings.llama_api_key:
+        return {"Authorization": f"Bearer {settings.llama_api_key}"}
+    return {}

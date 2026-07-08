@@ -19,10 +19,11 @@ from datetime import datetime
 from typing import Optional
 
 from ..config import settings
-from ..db import get_orch_state, insert_cycle, set_orch_state, update_cycle
-from ..models import CycleRecord, OrchestratorState
+from ..db import get_orch_state, insert_activity, insert_cycle, set_orch_state, update_cycle
+from ..models import ActivityEvent, CycleRecord, OrchestratorState
 from ..state_reader import parse_tasks
 from . import artifacts, budget, guardrails, prompts
+from .runner import set_activity_hook
 from .git_ops import (
     commit_all,
     diff_stat,
@@ -91,6 +92,9 @@ class OrchestratorController:
         if self._task is not None and not self._task.done():
             return "already running"
         guardrails.kill_switch.clear()
+        # wire the runner's tool calls into the activity feed so the dashboard
+        # shows what the agent is doing (file edits, shell, etc.) in real time
+        set_activity_hook(lambda t, m, meta: insert_activity(ActivityEvent(type=t, message=m, metadata=meta)))  # type: ignore[arg-type]
         self.state.running = True
         self.state.phase = "idle"
         self.state.last_error = None
@@ -130,6 +134,7 @@ class OrchestratorController:
         self.state.running = False
         self.state.phase = "stopped"
         guardrails.kill_switch.clear()
+        set_activity_hook(None)  # stop logging tool calls
         self._persist()
         log.info("orchestrator stopped")
         return "stopped"
