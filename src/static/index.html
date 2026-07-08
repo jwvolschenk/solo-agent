@@ -367,6 +367,16 @@ function renderHealth(h) {
   txt.textContent = labels[h.status] || h.status;
 }
 
+// Track context metrics across render calls (n_ctx from slots, n_tokens_max from metrics)
+let _nCtx = 0, _nTokensMax = 0;
+
+function _updateCtxBar() {
+  if (!_nCtx) return;
+  const pct = _nTokensMax > 0 ? Math.min(100, (_nTokensMax / _nCtx) * 100) : 0;
+  $('ctxBar').style.width = pct.toFixed(1) + '%';
+  $('ctxPct').textContent = `${fmt(_nTokensMax)} / ${fmt(_nCtx)} (${pct.toFixed(0)}%)`;
+}
+
 function renderMetrics(m) {
   const pre = m.prompt_tokens_seconds, dec = m.predicted_tokens_seconds;
   $('prefillVal').textContent = pre != null ? pre.toFixed(1) : '—';
@@ -375,6 +385,9 @@ function renderMetrics(m) {
   pushPoint(decodeChart, dec);
   $('totalTokens').textContent = fmt((m.prompt_tokens_total || 0) + (m.tokens_predicted_total || 0));
   $('queueInfo').textContent = `${m.requests_processing ?? 0} proc / ${m.requests_deferred ?? 0} queue`;
+  // context usage: n_tokens_max is the high-water mark of tokens in context
+  _nTokensMax = m.n_tokens_max || _nTokensMax;
+  _updateCtxBar();
 }
 
 function renderSlots(slots) {
@@ -382,9 +395,9 @@ function renderSlots(slots) {
   const total = slots.length;
   const busy = slots.filter(s => s.is_processing).length;
   $('slotsInfo').textContent = `${total - busy}/${total} idle`;
-  // context usage from the first slot's n_ctx vs n_tokens_max if we had it
   const nctx = slots[0]?.n_ctx;
-  if (nctx) $('ctxSize').textContent = fmt(nctx);
+  if (nctx) { _nCtx = nctx; $('ctxSize').textContent = fmt(nctx); }
+  _updateCtxBar();
 }
 
 // Phase timeline: ordered list of cycle phases. Node states: dim / active (pulsing) / done (green).
