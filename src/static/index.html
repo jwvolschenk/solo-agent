@@ -324,7 +324,12 @@ function connectWS() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => { $('wsStatus').textContent = 'connected'; stopPolling(); };
   ws.onmessage = (ev) => {
-    try { handleSnapshot(JSON.parse(ev.data)); } catch (e) { /* ignore */ }
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.kind === 'transcript_backfill') { handleTranscriptBackfill(msg.events || []); }
+      else if (msg.kind === 'transcript_event') { handleTranscriptEvent(msg.event); }
+      else { handleSnapshot(msg); }
+    } catch (e) { /* ignore */ }
   };
   ws.onclose = () => {
     $('wsStatus').textContent = 'disconnected — polling';
@@ -485,6 +490,98 @@ function renderOrchestrator(o) {
   if (o.goal != null && document.activeElement !== $('goalText')) {
     $('goalText').value = o.goal;
   }
+}
+
+// ============================================================================
+// Rich transcript (Track B, WS-pushed) — TUI-fidelity session-grouped feed.
+// Keyed by TranscriptEvent.id so a running -> completed update patches the
+// same entry instead of appending a duplicate. Falls back to renderActivity
+// (thin, REST-polled) when the WS is down -- see pollAll().
+// ============================================================================
+const _transcriptEntries = new Map();   // id -> TranscriptEvent
+const _transcriptOrder = [];            // ids, oldest first
+const _transcriptSessions = new Map();  // session_id -> {cycle, task, status}
+
+function handleTranscriptBackfill(events) {
+  _transcriptEntries.clear();
+  _transcriptOrder.length = 0;
+  _transcriptSessions.clear();
+  events.forEach(_ingestTranscriptEvent);
+  renderTranscript();
+}
+
+function handleTranscriptEvent(event) {
+  _ingestTranscriptEvent(event);
+  renderTranscript();
+}
+
+function _ingestTranscriptEvent(e) {
+  if (e.kind === 'session_start') {
+    _transcriptSessions.set(e.session_id, { cycle: e.cycle, task: e.task, status: 'running' });
+  } else if (e.kind === 'session_end') {
+    const s = _transcriptSessions.get(e.session_id) || {};
+    s.status = e.status;
+    _transcriptSessions.set(e.session_id, s);
+  }
+  if (!_transcriptEntries.has(e.id)) _transcriptOrder.push(e.id);
+  _transcriptEntries.set(e.id, e);
+  // cap client-side memory to roughly the server's ring buffer size
+  while (_transcriptOrder.length > 400) {
+    _transcriptEntries.delete(_transcriptOrder.shift());
+  }
+}
+
+function _diffLines(text) {
+  return esc(text).split('\n').map(line => {
+    if (line.startsWith('+')) return `<span class="text-green-400">${line}</span>`;
+    if (line.startsWith('-')) return `<span class="text-red-400">${line}</span>`;
+    return line;
+  }).join('\n');
+}
+
+function _renderTranscriptEntry(e) {
+  if (e.kind === 'text') {
+    return `<div class="pl-2 py-1 border-l-2 border-[#2a2a36] text-gray-300 whitespace-pre-wrap">${esc(e.text || '')}</div>`;
+  }
+  const badge = e.status === 'running' ? '<span class="pulse-dot text-yellow-400">●</span>'
+    : e.status === 'error' ? '<span class="text-red-400">✗</span>'
+    : '<span class="text-green-400">✓</span>';
+  const header = `<div class="flex items-center gap-2 text-gray-300"><span class="mono text-purple-400">${esc(e.tool || 'tool')}</span> ${badge} <span class="mono text-[11px] text-gray-500 break-all">${esc(e.title || e.input || '')}</span></div>`;
+  if (e.readonly) {
+    return `<div class="log-line tool pl-2 py-1">${header}</div>`;
+  }
+  const body = e.output
+    ? `<pre class="mono text-[11px] text-gray-400 bg-[#0d0d12] rounded p-2 mt-1 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">${_diffLines(e.output)}</pre>`
+    : '';
+  return `<div class="log-line ${e.status === 'error' ? 'error' : 'tool'} pl-2 py-1">${header}${body}</div>`;
+}
+
+function renderTranscript() {
+  const toolAndTextIds = _transcriptOrder.filter(id => {
+    const e = _transcriptEntries.get(id);
+    return e.kind === 'tool' || e.kind === 'text';
+  });
+  if (!toolAndTextIds.length) { $('activityFeed').innerHTML = '<div class="text-gray-600">no activity yet</div>'; return; }
+  // group consecutive entries by session_id into cards
+  const cards = [];
+  let current = null;
+  for (const id of toolAndTextIds) {
+    const e = _transcriptEntries.get(id);
+    if (!current || current.sid !== e.session_id) {
+      current = { sid: e.session_id, entries: [] };
+      cards.push(current);
+    }
+    current.entries.push(e);
+  }
+  $('activityFeed').innerHTML = cards.map(card => {
+    const s = _transcriptSessions.get(card.sid) || {};
+    const label = s.cycle != null ? `cycle ${s.cycle} · ${esc(s.task || '')}` : esc(card.sid);
+    const statusCls = s.status === 'error' ? 'text-red-400' : s.status === 'running' ? 'text-yellow-400' : 'text-green-400';
+    return `<div class="border border-[#23232e] rounded mb-2">
+      <div class="px-2 py-1 text-[11px] font-semibold ${statusCls} bg-[#15151d] rounded-t">${label}</div>
+      <div class="p-1 space-y-0.5">${card.entries.map(_renderTranscriptEntry).join('')}</div>
+    </div>`;
+  }).join('');
 }
 
 // Track the last activity event id we've seen so we can animate new entries
@@ -650,13 +747,6 @@ setInterval(async () => {
   refreshProjects();
   renderBacklogReflections();
 }, 3000);
-
-// dedicated fast activity poll (1s) — always runs, even when WS is connected,
-// so the agent's live actions appear in real time
-setInterval(async () => {
-  const a = await getJSON('/api/agent/activity?limit=40');
-  if (a) renderActivity(a.events || []);
-}, 1000);
 
 function renderCycles(cycles) {
   if (!cycles.length) return;

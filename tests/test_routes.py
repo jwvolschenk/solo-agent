@@ -119,6 +119,13 @@ def test_dashboard_html_served(client):
     assert "SOLO AGENT MONITOR" in r.text
 
 
+def test_dashboard_html_includes_transcript_rendering(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "renderTranscript" in r.text
+    assert "transcript_backfill" in r.text
+
+
 def test_metrics_history_validates_range(client):
     r = client.get("/api/metrics/history?range=2h")
     assert r.status_code == 422  # only 1h/6h/24h allowed
