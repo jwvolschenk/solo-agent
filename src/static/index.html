@@ -25,6 +25,10 @@
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-thumb { background: #2a2a36; border-radius: 4px; }
 
+    /* Activity feed animation */
+    @keyframes slideIn { from { opacity:0; transform: translateY(-8px); } to { opacity:1; transform: translateY(0); } }
+    .activity-new { animation: slideIn 0.3s ease-out; }
+
     /* Phase timeline */
     .phase-node {
       width: 14px; height: 14px; border-radius: 50%;
@@ -88,19 +92,19 @@
   <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
     <!-- Performance charts -->
-    <section class="card rounded-lg p-4 lg:col-span-5 space-y-3">
+    <section class="card rounded-lg p-3 lg:col-span-5 space-y-2">
       <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Performance</h2>
       <div>
-        <div class="flex justify-between text-xs text-gray-500 mb-1">
+        <div class="flex justify-between text-xs text-gray-500 mb-0.5">
           <span>Prefill t/s</span><span id="prefillVal" class="mono text-gray-300">—</span>
         </div>
-        <div class="h-20"><canvas id="prefillChart"></canvas></div>
+        <div class="h-12"><canvas id="prefillChart"></canvas></div>
       </div>
       <div>
-        <div class="flex justify-between text-xs text-gray-500 mb-1">
+        <div class="flex justify-between text-xs text-gray-500 mb-0.5">
           <span>Decode t/s</span><span id="decodeVal" class="mono text-gray-300">—</span>
         </div>
-        <div class="h-20"><canvas id="decodeChart"></canvas></div>
+        <div class="h-12"><canvas id="decodeChart"></canvas></div>
       </div>
     </section>
 
@@ -192,44 +196,55 @@
     </section>
   </div>
 
-  <!-- Lower grid: activity + directives + journal -->
+  <!-- Lower grid: activity (wide) + backlog/directives -->
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-    <!-- Activity feed -->
-    <section class="card rounded-lg p-4">
+    <!-- Activity feed (spans 2 columns — the main attraction) -->
+    <section class="card rounded-lg p-4 lg:col-span-2 flex flex-col">
       <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Recent Activity</h2>
-      <div id="activityFeed" class="space-y-1.5 text-xs max-h-80 overflow-y-auto">
+      <div id="activityFeed" class="space-y-0.5 text-xs overflow-y-auto flex-1" style="max-height: calc(100vh - 280px); min-height: 400px;">
         <div class="text-gray-600">no activity yet</div>
       </div>
     </section>
 
-    <!-- Directives -->
-    <section class="card rounded-lg p-4">
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Directives</h2>
-      <div class="flex gap-2 mb-3">
-        <select id="dirPriority" class="text-xs bg-[#1a1a22] border border-[#23232e] rounded px-1.5 py-1">
-          <option value="normal">normal</option>
-          <option value="high">high</option>
-          <option value="low">low</option>
-        </select>
-        <input id="dirInput" placeholder="Queue guidance for the agent…" maxlength="500"
-          class="flex-1 text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500" />
-        <button id="dirSend" class="px-3 py-1 text-xs rounded bg-brand-600 hover:bg-brand-500 text-white font-medium">Send</button>
+    <!-- Backlog + Directives + Reflections (combined sidebar) -->
+    <section class="card rounded-lg p-4 space-y-3">
+      <!-- Directives (steering) -->
+      <div>
+        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Directives</h2>
+        <div class="flex gap-1.5 mb-2">
+          <select id="dirPriority" class="text-xs bg-[#1a1a22] border border-[#23232e] rounded px-1.5 py-1">
+            <option value="normal">normal</option>
+            <option value="high">high</option>
+            <option value="low">low</option>
+          </select>
+          <input id="dirInput" placeholder="Queue guidance…" maxlength="500"
+            class="flex-1 text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500" />
+          <button id="dirSend" class="px-2 py-1 text-xs rounded bg-brand-600 hover:bg-brand-500 text-white font-medium">Send</button>
+        </div>
+        <div id="directiveList" class="space-y-1.5 max-h-32 overflow-y-auto">
+          <div class="text-gray-600 text-xs">no directives queued</div>
+        </div>
       </div>
-      <div id="directiveList" class="space-y-2 max-h-72 overflow-y-auto">
-        <div class="text-gray-600 text-xs">no directives queued</div>
-      </div>
-    </section>
 
-    <!-- Backlog (the agent's plan) -->
-    <section class="card rounded-lg p-4">
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Backlog <span class="text-gray-600 normal-case">(agent's plan)</span></h2>
-      <div id="backlogList" class="space-y-1 text-xs max-h-60 overflow-y-auto">
-        <div class="text-gray-600">no backlog yet</div>
+      <div class="border-t border-[#23232e]"></div>
+
+      <!-- Backlog (the agent's plan) -->
+      <div>
+        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Backlog <span class="text-gray-600 normal-case">(plan)</span></h2>
+        <div id="backlogList" class="space-y-1 text-xs max-h-40 overflow-y-auto">
+          <div class="text-gray-600">no backlog yet</div>
+        </div>
       </div>
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Reflections <span class="text-gray-600 normal-case">(memory)</span></h2>
-      <div id="reflectionsList" class="space-y-1.5 text-xs max-h-48 overflow-y-auto">
-        <div class="text-gray-600">no reflections yet</div>
+
+      <div class="border-t border-[#23232e]"></div>
+
+      <!-- Reflections (memory) -->
+      <div>
+        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Reflections <span class="text-gray-600 normal-case">(memory)</span></h2>
+        <div id="reflectionsList" class="space-y-1.5 text-xs max-h-32 overflow-y-auto">
+          <div class="text-gray-600">no reflections yet</div>
+        </div>
       </div>
     </section>
   </div>
@@ -472,6 +487,9 @@ function renderOrchestrator(o) {
   }
 }
 
+// Track the last activity event id we've seen so we can animate new entries
+let _lastActivityId = 0;
+
 function renderActivity(events) {
   if (!events.length) return;
   // deduplicate consecutive identical messages
@@ -480,11 +498,16 @@ function renderActivity(events) {
     const prev = deduped[deduped.length - 1];
     if (!prev || prev.message !== e.message) deduped.push(e);
   }
-  const icons = { file: '📝', tool: '$', error: '✗', task: '✓', system: 'ℹ' };
+  // figure out which entries are new (higher id than last seen)
+  const newIds = new Set(deduped.filter(e => (e.id || 0) > _lastActivityId).map(e => e.id));
+  _lastActivityId = Math.max(_lastActivityId, ...deduped.map(e => e.id || 0));
+
+  const wasNearBottom = true; // always prepend new items at top (newest first)
   $('activityFeed').innerHTML = deduped.map(e => {
     const t = new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    const icon = icons[e.type] || '•';
-    return `<div class="log-line ${e.type} pl-2 py-1 flex items-start gap-2">
+    const isNew = newIds.has(e.id);
+    const animClass = isNew ? 'activity-new' : '';
+    return `<div class="log-line ${e.type} ${animClass} pl-2 py-1 flex items-start gap-2">
       <span class="text-gray-600 mono text-[10px] shrink-0">${t}</span>
       <span class="text-gray-300 break-all">${esc(e.message)}</span>
     </div>`;
