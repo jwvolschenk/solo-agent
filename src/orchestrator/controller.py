@@ -238,10 +238,16 @@ class OrchestratorController:
                 raise
 
     async def _run_cycle(self) -> None:
-        """One REFLECT -> PLAN -> EXECUTE -> VERIFY -> RECORD cycle."""
-        # Only the kill switch gates the loop up front. No token budgets —
-        # this runs against a local model and churns 24/7. Token usage is
-        # counted for display only (see budget.py).
+        """One cycle. The cycle shape adapts to the backlog state:
+
+        - If there are PENDING (unchecked) backlog tasks → EXECUTE them directly.
+          No reflect/plan — the backlog is the plan. Churn through it.
+        - If there are NO pending tasks → ARCHIVE completed items to a dated
+          history file, then REFLECT+PLAN to find new work and refill the backlog.
+
+        This prevents the "continuously moving target" problem: the agent
+        finishes existing goals before looking for new ones.
+        """
         if guardrails.kill_switch.engaged:
             self.state.running = False
             self.state.phase = "stopped"
@@ -257,130 +263,160 @@ class OrchestratorController:
         self.state.current_task = None
         self.state.agent_session_id = None
 
-        rec = CycleRecord(cycle_number=cycle, phase="reflect", project_id=self.active_project_id)
+        rec = CycleRecord(cycle_number=cycle, phase="execute", project_id=self.active_project_id)
         self._current_cycle_id = insert_cycle(rec)
-        self.state.phase = "reflect"
-        self._persist()
 
-        snap = await snapshot()  # git sha before any changes
+        snap = await snapshot()
         self.state.last_snapshot_sha = snap
         tasks_attempted = 0
         tasks_passed = 0
+        gate = verify_enabled()
 
-        # --- REFLECT + PLAN (one fresh session; the prompt does both) ---
-        log.info("[cycle %d] REFLECT+PLAN", cycle)
-        reflect = await run_goal(
-            prompts.reflect_prompt(cycle), title=f"solo cycle {cycle} reflect"
-        )
-        self.state.cycle_tokens_used = budget.budget.cycle_tokens
-        self.state.agent_session_id = reflect.session_id
-        self._persist()
-        if not reflect.ok:
-            await self._record_cycle(
-                cycle, outcome="errored", error=reflect.error or "reflect failed",
-                sha=snap, tokens=reflect.tokens_used,
-            )
-            self.state.consecutive_fail_cycles += 1
-            await self._maybe_pause_on_stall(cycle)
-            return
-
-        # re-parse backlog to find unchecked tasks
+        # --- Check the backlog: are there pending tasks? ---
         backlog_tasks = parse_tasks(artifacts.read_backlog())
         pending = [t for t in backlog_tasks if t.status == "todo"]
-        if not pending:
-            log.info("[cycle %d] no pending backlog tasks; pausing for human", cycle)
-            await self._record_cycle(
-                cycle, outcome="paused", error="backlog empty",
-                summary="no pending tasks; needs human to seed backlog", sha=snap,
-            )
-            self.state.running = False
-            self.state.phase = "paused"
+
+        if pending:
+            # ---- EXECUTE PATH: churn through outstanding backlog work ----
+            log.info("[cycle %d] %d pending backlog task(s) — executing", cycle, len(pending))
+            self.state.phase = "execute"
             self._persist()
-            return
-
-        # --- EXECUTE (one fresh session per task, up to a small cap) ---
-        self.state.phase = "execute"
-        self._persist()
-        max_tasks = min(len(pending), 3)  # cap work per cycle to keep cycles bounded
-        gate = verify_enabled()  # if False, no orchestrator gate; agent self-verifies
-        for task in pending[:max_tasks]:
-            if guardrails.kill_switch.engaged:
-                break
-            tasks_attempted += 1
-            self.state.current_task = task.text
-            self._persist()
-            log.info("[cycle %d] EXECUTE: %s", cycle, task.text[:80])
-
-            # snapshot before each task so we can revert just it on gate failure
-            task_snap = await snapshot()
-            res = await run_goal(
-                prompts.execute_prompt(cycle, task.text),
-                title=f"solo cycle {cycle} task",
-            )
-            self.state.cycle_tokens_used = budget.budget.cycle_tokens
-            self._persist()
-
-            if not res.ok:
-                log.warning("[cycle %d] task agent failed: %s", cycle, res.error)
-                # only revert if there's a gate to enforce; without one, trust the agent
-                if gate and task_snap:
-                    await revert_to(task_snap)
-                continue
-
-            # --- VERIFY (only if a gate is configured) ---
-            if gate:
-                self.state.phase = "verify"
+            max_tasks = min(len(pending), 3)
+            for task in pending[:max_tasks]:
+                if guardrails.kill_switch.engaged:
+                    break
+                tasks_attempted += 1
+                self.state.current_task = task.text
                 self._persist()
-                verify = await run_verify()
-                if verify.ok:
-                    tasks_passed += 1
-                    await stage_all()
-                    await commit_all(f"solo-agent cycle {cycle}: {task.text[:72]}")
-                    log.info("[cycle %d] VERIFY PASS, committed", cycle)
-                else:
-                    log.warning("[cycle %d] VERIFY FAIL, reverting: %s", cycle, verify.summary())
-                    if task_snap:
+                log.info("[cycle %d] EXECUTE: %s", cycle, task.text[:80])
+
+                task_snap = await snapshot()
+                res = await run_goal(
+                    prompts.execute_prompt(cycle, task.text),
+                    title=f"solo cycle {cycle} task",
+                )
+                self.state.cycle_tokens_used = budget.budget.cycle_tokens
+                self.state.agent_session_id = res.session_id
+                self._persist()
+
+                if not res.ok:
+                    log.warning("[cycle %d] task agent failed: %s", cycle, res.error)
+                    if gate and task_snap:
                         await revert_to(task_snap)
-            else:
-                # No orchestrator gate — the agent self-verifies (prompt told it to).
-                # Commit the work and count it as done.
+                    continue
+
+                # verify (only if a gate is configured)
+                if gate:
+                    self.state.phase = "verify"
+                    self._persist()
+                    verify = await run_verify()
+                    if not verify.ok:
+                        log.warning("[cycle %d] VERIFY FAIL, reverting: %s", cycle, verify.summary())
+                        if task_snap:
+                            await revert_to(task_snap)
+                        continue
+
+                # commit the work
                 tasks_passed += 1
                 await stage_all()
                 await commit_all(f"solo-agent cycle {cycle}: {task.text[:72]}")
-                log.info("[cycle %d] no gate — committed agent's self-verified work", cycle)
+                log.info("[cycle %d] task committed", cycle)
 
-        # --- RECORD ---
-        self.state.phase = "record"
-        head = await snapshot()
-        lines = await diff_stat(snap) if snap else 0
-        outcome = "passed" if tasks_passed > 0 else ("failed" if tasks_attempted else "paused")
-        reflection_text = (
-            f"Attempted {tasks_attempted} task(s); {tasks_passed} completed"
-            + (" (gate passed)" if gate else " (no gate; agent self-verified)")
-            + f". {lines} lines changed. Agent summary: {reflect.final_message[:200]}"
-        )
-        artifacts.append_reflection(
-            reflection_text, cycle=cycle, outcome=outcome, sha=head,
-        )
-        await self._record_cycle(
-            cycle, outcome=outcome, sha=snap, head_sha=head, lines=lines,
-            tokens=budget.budget.cycle_tokens, attempted=tasks_attempted,
-            passed=tasks_passed, summary=reflect.final_message[:500],
-        )
+            # record the execute cycle
+            self.state.phase = "record"
+            head = await snapshot()
+            lines = await diff_stat(snap) if snap else 0
+            outcome = "passed" if tasks_passed > 0 else ("failed" if tasks_attempted else "paused")
+            reflection_text = (
+                f"Executed {tasks_attempted} backlog task(s); {tasks_passed} completed"
+                + (" (gate passed)" if gate else " (no gate; agent self-verified)")
+                + f". {lines} lines changed."
+            )
+            artifacts.append_reflection(reflection_text, cycle=cycle, outcome=outcome, sha=head)
+            await self._record_cycle(
+                cycle, outcome=outcome, sha=snap, head_sha=head, lines=lines,
+                tokens=budget.budget.cycle_tokens, attempted=tasks_attempted,
+                passed=tasks_passed, summary=reflection_text[:500],
+            )
+            self._update_stall_counters(lines, tasks_passed, tasks_attempted)
+            await self._maybe_pause_on_stall(cycle)
 
-        # update stall detectors
-        self.state.consecutive_low_change_cycles = (
-            self.state.consecutive_low_change_cycles + 1 if lines < settings.stall_min_lines_changed else 0
-        )
-        self.state.consecutive_fail_cycles = (
-            self.state.consecutive_fail_cycles + 1 if tasks_passed == 0 and tasks_attempted > 0 else 0
-        )
-        await self._maybe_pause_on_stall(cycle)
+        else:
+            # ---- REFLECT PATH: backlog empty/all-done → archive, then plan ----
+            log.info("[cycle %d] backlog clear — archiving + reflecting", cycle)
+
+            # Step 1: archive completed items into a dated history file
+            archived = artifacts.archive_backlog()
+            if archived:
+                await stage_all()
+                await commit_all(f"solo-agent cycle {cycle}: archive {archived} completed backlog items")
+                log.info("[cycle %d] archived %d completed items", cycle, archived)
+
+            # Step 2: reflect + plan to find new work
+            self.state.phase = "reflect"
+            self._persist()
+            reflect = await run_goal(
+                prompts.reflect_prompt(cycle), title=f"solo cycle {cycle} reflect"
+            )
+            self.state.cycle_tokens_used = budget.budget.cycle_tokens
+            self.state.agent_session_id = reflect.session_id
+            self._persist()
+
+            if not reflect.ok:
+                await self._record_cycle(
+                    cycle, outcome="errored", error=reflect.error or "reflect failed",
+                    sha=snap, tokens=reflect.tokens_used,
+                )
+                self.state.consecutive_fail_cycles += 1
+                await self._maybe_pause_on_stall(cycle)
+                return
+
+            # check if reflect added new tasks
+            backlog_tasks = parse_tasks(artifacts.read_backlog())
+            new_pending = [t for t in backlog_tasks if t.status == "todo"]
+            if not new_pending:
+                log.info("[cycle %d] reflect produced no new tasks; pausing", cycle)
+                await self._record_cycle(
+                    cycle, outcome="paused", error="reflect produced no new tasks",
+                    summary="agent couldn't find more work to do", sha=snap,
+                )
+                self.state.running = False
+                self.state.phase = "paused"
+                self._persist()
+                return
+
+            head = await snapshot()
+            lines = await diff_stat(snap) if snap else 0
+            outcome = "passed"
+            reflection_text = (
+                f"Archived {archived} completed items, then reflected: "
+                f"{len(new_pending)} new task(s) added. {reflect.final_message[:200]}"
+            )
+            artifacts.append_reflection(reflection_text, cycle=cycle, outcome=outcome, sha=head)
+            await self._record_cycle(
+                cycle, outcome=outcome, sha=snap, head_sha=head, lines=lines,
+                tokens=budget.budget.cycle_tokens, attempted=0, passed=0,
+                summary=reflect.final_message[:500],
+            )
+            self._update_stall_counters(lines, 1, 1)
 
         self.state.phase = "idle"
         self.state.current_task = None
         self.state.last_outcome = outcome
         self._persist()
+
+    def _update_stall_counters(self, lines: int, tasks_passed: int, tasks_attempted: int) -> None:
+        """Update the diminishing-returns + consecutive-failure counters."""
+        self.state.consecutive_low_change_cycles = (
+            self.state.consecutive_low_change_cycles + 1
+            if lines < settings.stall_min_lines_changed
+            else 0
+        )
+        self.state.consecutive_fail_cycles = (
+            self.state.consecutive_fail_cycles + 1
+            if tasks_passed == 0 and tasks_attempted > 0
+            else 0
+        )
 
     async def _maybe_pause_on_stall(self, cycle: int) -> None:
         """Auto-pause if the loop is stalled or consistently failing."""

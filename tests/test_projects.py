@@ -94,3 +94,45 @@ def test_soft_stop_flag_sets_state(client, tmp_settings):
     # cancel it
     r2 = client.post("/api/orchestrator/cancel-stop-after-cycle")
     assert r2.json()["stop_after_cycle"] is False
+
+
+def test_archive_backlog_moves_done_items(tmp_settings):
+    """archive_backlog should move [x] items to a history file and leave unchecked ones."""
+    from src.orchestrator import artifacts
+
+    # write a backlog with done + pending items
+    backlog = artifacts.backlog_path()
+    backlog.parent.mkdir(parents=True, exist_ok=True)
+    backlog.write_text(
+        "# Backlog\n\n"
+        "- [ ] pending task one\n"
+        "- [x] done task one\n"
+        "- [ ] pending task two\n"
+        "- [x] done task two\n",
+        encoding="utf-8",
+    )
+
+    archived = artifacts.archive_backlog()
+    assert archived == 2
+
+    # backlog should now have only the pending items
+    remaining = backlog.read_text()
+    assert "- [ ] pending task one" in remaining
+    assert "- [ ] pending task two" in remaining
+    assert "[x]" not in remaining
+
+    # history file should exist with the done items
+    histories = list(artifacts.history_dir().glob("backlog-*.md"))
+    assert len(histories) == 1
+    hcontent = histories[0].read_text()
+    assert "done task one" in hcontent
+    assert "done task two" in hcontent
+
+
+def test_archive_backlog_nothing_done_returns_zero(tmp_settings):
+    from src.orchestrator import artifacts
+
+    backlog = artifacts.backlog_path()
+    backlog.parent.mkdir(parents=True, exist_ok=True)
+    backlog.write_text("# Backlog\n\n- [ ] only pending\n", encoding="utf-8")
+    assert artifacts.archive_backlog() == 0

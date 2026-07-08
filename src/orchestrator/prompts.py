@@ -21,8 +21,11 @@ ORIENT = (
 def reflect_prompt(cycle: int) -> str:
     return f"""{ORIENT}
 
-PHASE: REFLECT (cycle {cycle}). Look at the current state of this project vs.
-GOAL.md. What's the highest-value work to do next?
+PHASE: REFLECT (cycle {cycle}). The backlog has been cleared — all previous goals
+are done and archived. It's time to find the next round of work.
+
+Look at the current state of this project vs. GOAL.md. What's the highest-value
+work to do next?
 
 - If the project is empty (from-scratch), this means proposing the scaffolding
   and first concrete features.
@@ -36,7 +39,7 @@ you've queued them.
 
 Append each candidate as a new `- [ ]` line in backlog.md. Each task must be
 small (~one session) and independently completable. Don't duplicate items
-already in backlog.md, and don't remove or check off existing items.
+already in backlog.md.
 
 End with: DONE: <how many tasks you added and the themes>"""
 
@@ -55,16 +58,20 @@ End with: DONE: <the task ordering, one line>"""
 def execute_prompt(cycle: int, task_text: str) -> str:
     return f"""{ORIENT}
 
-PHASE: EXECUTE (cycle {cycle}). Implement exactly ONE task toward GOAL.md:
+PHASE: EXECUTE (cycle {cycle}). Implement exactly ONE task:
 
     {task_text}
 
 Read reflections.md to avoid repeating past failures, then make the change.
-Stay in scope — don't refactor unrelated code. Don't mark the task done in
-backlog.md (the orchestrator advances state). Since the orchestrator may not
-run a verify gate, run the project's own build/test/lint yourself before
-stopping to confirm your work is correct. If the task is blocked or invalid,
-stop and say so honestly.
+Stay in scope — don't refactor unrelated code.
+
+**Marking the task done**: when you complete the task (or discover it was
+already done), edit its line in backlog.md from `- [ ]` to `- [x]`. This is
+REQUIRED — it's how the orchestrator tracks progress. If the task turns out
+to be blocked or invalid, leave it as `- [ ]` and say so in your summary.
+
+Since the orchestrator may not run a verify gate, run the project's own
+build/test/lint yourself before stopping to confirm your work is correct.
 
 End with: DONE: <one-line summary of what you changed or why you stopped>"""
 
