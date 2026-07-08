@@ -93,3 +93,51 @@ def test_controller_persists_and_resumes(controller_with_tmp_repo):
     persisted = get_orch_state()
     assert persisted["cycle_number"] == 42
     assert persisted["phase"] == "paused"
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_brackets_task_execution_with_transcript_session_markers(controller_with_tmp_repo, tmp_target_repo):
+    """Each backlog task execution should show up in the transcript as a
+    session_start/session_end pair, so the dashboard can group tool calls."""
+    from src import transcript
+
+    c = controller_with_tmp_repo
+    (tmp_target_repo / "backlog.md").write_text("- [ ] do the thing\n")
+    transcript.clear()
+
+    await c._run_cycle()
+
+    assert c.state.phase == "idle"
+    snap = transcript.snapshot()
+    starts = [e for e in snap if e.kind == "session_start"]
+    ends = [e for e in snap if e.kind == "session_end"]
+    assert len(starts) == 1
+    assert len(ends) == 1
+    assert starts[0].task == "do the thing"
+    assert starts[0].session_id == ends[0].session_id
+    assert starts[0].status == "running"
+    assert ends[0].status in ("completed", "error")
+
+
+@pytest.mark.asyncio
+async def test_switch_project_clears_transcript(controller_with_tmp_repo, tmp_path):
+    from datetime import datetime
+
+    from src import transcript
+    from src.db import insert_project
+    from src.models import TranscriptEvent
+
+    c = controller_with_tmp_repo
+    transcript._buffer.append(TranscriptEvent(id="e1", kind="tool", session_id="s1"))
+
+    other = tmp_path / "other-project"
+    other.mkdir()
+    now = datetime.utcnow().isoformat()
+    insert_project({
+        "id": "other", "name": "Other", "goal": "build x", "project_path": str(other),
+        "verify_command": "", "work_branch": "solo-agent/auto", "stop_after_cycle": 0,
+        "created_at": now, "updated_at": now,
+    })
+
+    await c.switch_project("other")
+    assert transcript.snapshot() == []

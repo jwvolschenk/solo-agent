@@ -23,10 +23,11 @@ from ..db import (
     get_active_project, get_orch_state, insert_activity, insert_cycle,
     set_orch_state, update_cycle, fetch_project, set_active_project, update_project,
 )
-from ..models import ActivityEvent, CycleRecord, OrchestratorState
+from ..models import ActivityEvent, CycleRecord, OrchestratorState, TranscriptEvent
 from ..state_reader import parse_tasks
+from .. import transcript
 from . import artifacts, budget, guardrails, prompts
-from .runner import set_activity_hook
+from .runner import new_session_id, set_activity_hook
 from .git_ops import (
     commit_all,
     diff_stat,
@@ -96,6 +97,7 @@ class OrchestratorController:
         budget.reset_cycle()
         guardrails.loop_detector.reset()
         guardrails.no_progress.reset()
+        transcript.clear()  # a new project's loop starts with a clean rich transcript
         # resume the new project's persisted state
         self._resume()
         self.state.project_id = project_id
@@ -294,11 +296,22 @@ class OrchestratorController:
                 self._persist()
                 log.info("[cycle %d] EXECUTE: %s", cycle, task.text[:80])
 
+                sid = new_session_id()
+                await transcript.record(TranscriptEvent(
+                    id=sid, kind="session_start", status="running",
+                    session_id=sid, cycle=cycle, task=task.text,
+                ))
                 task_snap = await snapshot()
                 res = await run_goal(
                     prompts.execute_prompt(cycle, task.text),
                     title=f"solo cycle {cycle} task",
+                    session_id=sid,
                 )
+                await transcript.record(TranscriptEvent(
+                    id=f"{sid}-end", kind="session_end",
+                    status="completed" if res.ok else "error",
+                    session_id=sid, cycle=cycle, task=task.text,
+                ))
                 self.state.cycle_tokens_used = budget.budget.cycle_tokens
                 self.state.agent_session_id = res.session_id
                 self._persist()
@@ -359,9 +372,20 @@ class OrchestratorController:
             # Step 2: reflect + plan to find new work
             self.state.phase = "reflect"
             self._persist()
+            sid = new_session_id()
+            await transcript.record(TranscriptEvent(
+                id=sid, kind="session_start", status="running",
+                session_id=sid, cycle=cycle, task="reflect + plan",
+            ))
             reflect = await run_goal(
-                prompts.reflect_prompt(cycle), title=f"solo cycle {cycle} reflect"
+                prompts.reflect_prompt(cycle), title=f"solo cycle {cycle} reflect",
+                session_id=sid,
             )
+            await transcript.record(TranscriptEvent(
+                id=f"{sid}-end", kind="session_end",
+                status="completed" if reflect.ok else "error",
+                session_id=sid, cycle=cycle, task="reflect + plan",
+            ))
             self.state.cycle_tokens_used = budget.budget.cycle_tokens
             self.state.agent_session_id = reflect.session_id
             self._persist()
