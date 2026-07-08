@@ -104,6 +104,29 @@ class ActivityEvent(BaseModel):
     project_id: Optional[str] = None
 
 
+class TranscriptEvent(BaseModel):
+    """A rich, TUI-fidelity transcript entry — Track B, live-only, never
+    persisted. The uncurated counterpart to ActivityEvent (Track A, which
+    stays curated/truncated and durable in activity_log).
+
+    See docs/superpowers/specs/2026-07-08-realtime-tui-transcript-design.md.
+    """
+
+    id: str
+    kind: Literal["tool", "text", "session_start", "session_end"] = "tool"
+    status: Literal["running", "completed", "error"] = "completed"
+    tool: Optional[str] = None
+    readonly: bool = False
+    input: Optional[str] = None
+    output: Optional[str] = None
+    text: Optional[str] = None
+    title: Optional[str] = None
+    cycle: Optional[int] = None
+    task: Optional[str] = None
+    session_id: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
 # ============================================================================
 # Shared state files (tasks / journal / plan / summaries)
 # ============================================================================
