@@ -187,6 +187,8 @@ def mock_agent_script(tmp_path):
       ok       -> emits a text message + a stop step_finish, then exits 0
       error    -> emits an error event then exits 0 (opencode bug: rc 0 on error)
       hang     -> sleeps forever (to test timeout/kill)
+      tool     -> emits a correlated bash tool call (running -> completed) plus
+                  a read-only tool call with no callID, then text + step_finish
     """
     script = tmp_path / "mock_agent.py"
     script.write_text(textwrap.dedent("""\
@@ -198,6 +200,28 @@ def mock_agent_script(tmp_path):
             sys.exit(0)
         if mode == "error":
             print(json.dumps({"type": "error", "part": {"error": {"message": "boom"}}}))
+            sys.exit(0)
+        if mode == "tool":
+            # a correlated bash call: running -> completed with output
+            print(json.dumps({
+                "type": "tool_use",
+                "part": {"tool": "bash", "callID": "call-1",
+                         "state": {"status": "running", "input": {"command": "npm test"}}}
+            }))
+            print(json.dumps({
+                "type": "tool_use",
+                "part": {"tool": "bash", "callID": "call-1",
+                         "state": {"status": "completed", "input": {"command": "npm test"},
+                                   "output": "5 passed"}}
+            }))
+            # a read-only call with no callID -- completed straight away
+            print(json.dumps({
+                "type": "tool_use",
+                "part": {"tool": "read", "state": {"status": "completed",
+                                                     "input": {"filePath": "README.md"}}}
+            }))
+            print(json.dumps({"type": "text", "part": {"type": "text", "text": "DONE: ran tests"}}))
+            print(json.dumps({"type": "step_finish", "part": {"reason": "stop", "tokens": {"total": 80, "input": 50, "output": 30}}}))
             sys.exit(0)
         # ok: emit assistant text + a clean stop step_finish with token counts
         print(json.dumps({"type": "text", "part": {"type": "text", "text": "DONE: added a test"}}))

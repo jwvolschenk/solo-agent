@@ -22,9 +22,11 @@ import shlex
 import signal
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from ..config import settings
+from ..models import TranscriptEvent
+from .. import transcript
 from . import budget
 
 log = logging.getLogger("solo.runner")
@@ -58,9 +60,10 @@ class AgentResult:
     events: list[dict] = field(default_factory=list)
 
 
-def _new_session_id() -> str:
-    """Generate a stable session id. Used only if the command template
-    references {session}; fresh goals (the Ralph default) don't pass --session."""
+def new_session_id() -> str:
+    """Generate a stable session id. Used to correlate {session} template
+    substitution AND to group this goal's transcript events (see transcript.py)
+    under one session card in the dashboard."""
     return f"solo-{uuid.uuid4().hex[:12]}"
 
 
@@ -92,6 +95,7 @@ async def run_goal(
     *,
     timeout: Optional[float] = None,
     title: str = "solo-agent goal",
+    session_id: Optional[str] = None,
 ) -> AgentResult:
     """Run one agent goal to completion (or timeout). Returns an AgentResult.
 
@@ -100,9 +104,14 @@ async def run_goal(
 
     Reads stdout LINE BY LINE as it arrives — not buffered until exit — so
     activity events flow to the dashboard in real time while the agent works.
+
+    session_id, if provided, tags every live transcript event this goal
+    produces (see transcript.py) so the dashboard can group them under one
+    session card. If omitted, a fresh one is generated (existing callers/tests
+    are unaffected).
     """
     timeout = timeout or settings.per_goal_timeout_sec
-    session_id = _new_session_id()
+    session_id = session_id or new_session_id()
     argv = build_command(prompt, session_id, title)
     log.info("spawning agent: %s", _redact(argv))
 
@@ -132,7 +141,7 @@ async def run_goal(
             decoded = line.decode("utf-8", errors="replace").rstrip()
             stdout_lines.append(decoded)
             # process the event immediately for live activity
-            ev_stopped = _process_live_event(decoded)
+            ev_stopped = await _process_live_event(decoded, session_id)
             if ev_stopped:
                 stopped = True
 
@@ -166,7 +175,9 @@ async def run_goal(
     result.events, result.final_message, result.tokens_used, parse_stopped = _parse_event_stream(result.stdout)
     if parse_stopped:
         stopped = True
-    budget.budget.add(result.tokens_used)
+    # NOTE: tokens are already counted live, per step_finish event, inside
+    # _process_live_event -- do NOT budget.budget.add(result.tokens_used) here.
+    # That used to double-count every goal's usage (see test_runner_does_not_double_count_tokens).
 
     # Determine success. OpenCode signals clean completion via a step_finish
     # event with part.reason == "stop" (the agent chose to stop). We also accept
@@ -195,16 +206,24 @@ async def run_goal(
     return result
 
 
-def _process_live_event(line: str) -> bool:
+async def _process_live_event(line: str, session_id: str) -> bool:
     """Process a single NDJSON line as it arrives from the agent's stdout.
 
-    Emits activity events in real time (so the dashboard updates while the
-    agent works, not after it finishes). Returns True if this event signals
-    completion (step_finish with reason=stop).
+    Drives BOTH activity tracks in real time as data arrives (not after the
+    process exits):
+      - Track A (thin, durable): _emit_tool_activity -> db.insert_activity via
+        the activity hook, unchanged curated behavior (skips read-only tools,
+        truncates).
+      - Track B (rich, live-only): every tool call (any tool, any status) and
+        every full-text reasoning message -> transcript.record().
 
-    This is the streaming counterpart of the parsing in _parse_event_stream —
-    the same logic, but called per-line as data arrives instead of on the
-    full buffer at the end.
+    Returns True if this event signals completion (step_finish, reason=stop).
+
+    This is the ONLY place activity/transcript events are emitted from the
+    live stream. _parse_event_stream (run on the full buffer after the process
+    exits) only computes the final AgentResult summary and must not re-emit —
+    it used to, which double-logged every tool call/message and double-counted
+    tokens (see _parse_event_stream's docstring).
     """
     line = line.strip()
     if not line or not line.startswith("{"):
@@ -217,20 +236,24 @@ def _process_live_event(line: str) -> bool:
     etype = event.get("type", "")
     part = event.get("part") or {}
 
-    # emit activity for tool calls as they complete
-    if etype == "tool_use" and _activity_hook is not None:
-        tool = part.get("tool", "unknown")
-        state = part.get("state") or {}
-        inp = state.get("input") or part.get("input") or {}
-        title = state.get("title") or ""
-        if state.get("status") == "completed":
-            _emit_tool_activity(tool, inp, title)
+    if etype == "tool_use":
+        await _handle_tool_use_event(part, session_id)
 
     # emit activity for assistant text messages (the agent's reasoning/output)
-    if etype == "text" and _activity_hook is not None:
+    if etype == "text":
         text = part.get("text") or ""
         if isinstance(text, str) and text.strip():
-            _activity_hook("system", text.strip()[:200], {})
+            if _activity_hook is not None:
+                _activity_hook("system", text.strip()[:200], {})
+            await transcript.record(
+                TranscriptEvent(
+                    id=str(uuid.uuid4()),
+                    kind="text",
+                    status="completed",
+                    text=_cap(text.strip()),
+                    session_id=session_id,
+                )
+            )
 
     # count tokens as they come in
     if etype == "step_finish":
@@ -242,11 +265,114 @@ def _process_live_event(line: str) -> bool:
     return False
 
 
-def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int, bool]:
-    """Parse newline-delimited JSON events from agent stdout.
+_READONLY_TOOLS = {"read", "grep", "glob", "list", "tree", "search"}
 
-    Returns (events, final_message, total_tokens, stopped). Tolerates non-JSON
-    lines (mixed logs) by skipping them.
+
+async def _handle_tool_use_event(part: dict, session_id: str) -> None:
+    """Fires on every tool_use event, any tool, any status.
+
+    Track A (thin) only fires for completed, allowlisted tools — unchanged
+    _emit_tool_activity behavior. Track B (rich) records every tool call: a
+    "running" entry when a correlation id is available and the tool isn't
+    already completed, upgraded in place to "completed"/"error" once it is.
+    If no correlation id can be found, the running phase is skipped entirely
+    and only the completed entry is recorded — same trigger point as before,
+    just with fuller detail.
+    """
+    tool = part.get("tool", "unknown")
+    state = part.get("state") or {}
+    status_raw = state.get("status") or ""
+    inp = state.get("input") or part.get("input") or {}
+    title = state.get("title") or ""
+
+    if status_raw == "completed" and _activity_hook is not None:
+        _emit_tool_activity(tool, inp, title)
+
+    if status_raw == "completed":
+        status: Literal["running", "completed", "error"] = (
+            "error" if state.get("error") else "completed"
+        )
+    elif status_raw:
+        status = "running"
+    else:
+        return  # no status at all -- nothing meaningful to record yet
+
+    call_id = _extract_call_id(part, state)
+    if status == "running" and call_id is None:
+        return  # can't correlate a later completion back to this entry
+
+    output = None if status == "running" else _extract_tool_output(state, part)
+    await transcript.record(
+        TranscriptEvent(
+            id=call_id or str(uuid.uuid4()),
+            kind="tool",
+            status=status,
+            tool=tool,
+            readonly=tool in _READONLY_TOOLS,
+            input=_cap(_stringify(inp)),
+            output=_cap(output) if output else None,
+            title=title or None,
+            session_id=session_id,
+        ),
+        op="append" if status == "running" else "update",
+    )
+
+
+def _extract_call_id(part: dict, state: dict) -> Optional[str]:
+    """Best-effort correlation id so a later completed event can update the
+    same transcript entry a running event created. Field name isn't confirmed
+    against a real OpenCode trace -- checks several plausible candidates and
+    returns None (safe degradation) if none match."""
+    for src, key in ((part, "callID"), (part, "id"), (state, "callID"), (state, "id")):
+        val = src.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return None
+
+
+def _extract_tool_output(state: dict, part: dict) -> Optional[str]:
+    """Best-effort tool output/diff extraction. Field name isn't confirmed
+    against a real OpenCode trace -- tries several plausible candidates in
+    order and logs at DEBUG (cheap, no-op when disabled) if none match, so
+    real traces can be inspected and this list tuned later."""
+    metadata = state.get("metadata") or {}
+    candidates = [
+        state.get("output"), metadata.get("diff"), metadata.get("patch"),
+        metadata.get("stdout"), part.get("output"),
+    ]
+    for c in candidates:
+        if c:
+            return _stringify(c)
+    log.debug("no output field found for tool_use, state keys=%s", sorted(state.keys()))
+    return None
+
+
+def _stringify(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, default=str)
+    except Exception:
+        return str(value)
+
+
+def _cap(text: Optional[str], limit: int = 8192) -> Optional[str]:
+    if text is None:
+        return None
+    return text if len(text) <= limit else text[:limit] + "… [truncated]"
+
+
+def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int, bool]:
+    """Parse newline-delimited JSON events from the FULL accumulated stdout,
+    once the process has exited, to compute the final AgentResult summary
+    (events/final_message/tokens_used/stopped).
+
+    This does NOT emit activity or transcript events — that already happened
+    live, per-line, in _process_live_event as the process ran. Re-emitting
+    here used to double-log every tool call/message and double-count tokens
+    (this function's total_tokens used to also get added to the budget a
+    second time in run_goal, on top of the live per-step_finish adds) — fixed
+    by making this purely a read-only summary pass.
 
     OpenCode's actual event schema (verified against v1.17.x):
       {"type": "text",        "part": {"type":"text", "text": "<msg>"}}    — assistant message
@@ -285,17 +411,6 @@ def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int, bool]:
             text = part.get("text") or event.get("text")
             if isinstance(text, str) and text.strip():
                 final_message = text.strip()
-
-        # emit activity events for notable tool calls so the dashboard shows what the agent is doing
-        if etype == "tool_use" and _activity_hook is not None:
-            tool = part.get("tool", "unknown")
-            state = part.get("state") or {}
-            # OpenCode nests the actual tool input under state.input, not part.input
-            inp = state.get("input") or part.get("input") or {}
-            # also grab the title (OpenCode puts a human-readable summary there for bash calls)
-            title = state.get("title") or ""
-            if state.get("status") == "completed":
-                _emit_tool_activity(tool, inp, title)
 
     # fallback: if no JSON events at all, treat stdout (minus noise) as the message
     if not events and stdout.strip():
