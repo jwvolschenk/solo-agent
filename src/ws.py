@@ -2,12 +2,15 @@
 
 Holds the set of connected clients and broadcasts DashboardSnapshots to all of
 them. Used by the collector (metrics updates), the state watcher (file changes),
-and the orchestrator (phase transitions).
+and the orchestrator (phase transitions). Also fans out transcript events
+(src/transcript.py) via broadcast_json, independent of the collector's poll
+cadence -- transcript events are pushed the instant they happen.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from fastapi import WebSocket
@@ -18,7 +21,7 @@ log = logging.getLogger("solo.ws")
 
 
 class ConnectionManager:
-    """Tracks live WebSocket clients and fans out snapshots."""
+    """Tracks live WebSocket clients and fans out snapshots + events."""
 
     def __init__(self) -> None:
         self._clients: set[WebSocket] = set()
@@ -37,11 +40,16 @@ class ConnectionManager:
 
     async def broadcast_snapshot(self, snapshot: DashboardSnapshot) -> None:
         """Send a snapshot to every connected client. Swallows per-client errors."""
+        await self._broadcast_text(snapshot.model_dump_json())
+
+    async def broadcast_json(self, payload: dict) -> None:
+        """Send an arbitrary JSON-serializable payload to every connected client."""
+        await self._broadcast_text(json.dumps(payload, default=str))
+
+    async def _broadcast_text(self, payload: str) -> None:
         if not self._clients:
             return
-        payload = snapshot.model_dump_json()
         dead: list[WebSocket] = []
-        # copy to avoid mutating during iteration
         for ws in list(self._clients):
             try:
                 await ws.send_text(payload)

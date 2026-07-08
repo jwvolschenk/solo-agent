@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import transcript
 from .collector import collector
 from .config import settings
 from .db import init_db
@@ -34,6 +35,8 @@ log = logging.getLogger("solo.main")
 
 # Wire the collector's broadcast to the WebSocket manager.
 collector._broadcast = manager.broadcast_snapshot
+# Wire the rich transcript ring buffer's broadcast to the same manager.
+transcript.set_broadcast(manager.broadcast_json)
 
 
 @asynccontextmanager
