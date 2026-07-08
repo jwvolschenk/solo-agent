@@ -615,6 +615,13 @@ setInterval(async () => {
   renderBacklogReflections();
 }, 3000);
 
+// dedicated fast activity poll (1s) — always runs, even when WS is connected,
+// so the agent's live actions appear in real time
+setInterval(async () => {
+  const a = await getJSON('/api/agent/activity?limit=40');
+  if (a) renderActivity(a.events || []);
+}, 1000);
+
 function renderCycles(cycles) {
   if (!cycles.length) return;
   const out = { passed: 'text-green-400', failed: 'text-red-400', reverted: 'text-orange-400', paused: 'text-yellow-400', errored: 'text-red-400', running: 'text-blue-400' };

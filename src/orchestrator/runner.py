@@ -97,6 +97,9 @@ async def run_goal(
 
     Spawns the agent as a subprocess in its own process group so we can kill
     the whole tree on timeout (opencode may spawn children).
+
+    Reads stdout LINE BY LINE as it arrives — not buffered until exit — so
+    activity events flow to the dashboard in real time while the agent works.
     """
     timeout = timeout or settings.per_goal_timeout_sec
     session_id = _new_session_id()
@@ -115,21 +118,54 @@ async def run_goal(
         return AgentResult(ok=False, session_id=session_id, error=f"agent binary not found: {e}")
 
     result = AgentResult(ok=False, session_id=session_id)
+    stdout_lines: list[str] = []
+    stopped = False
+
+    async def _read_stdout() -> None:
+        """Read stdout line-by-line, processing each JSON event as it arrives."""
+        nonlocal stopped
+        assert proc.stdout is not None
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break  # EOF — process closed stdout
+            decoded = line.decode("utf-8", errors="replace").rstrip()
+            stdout_lines.append(decoded)
+            # process the event immediately for live activity
+            ev_stopped = _process_live_event(decoded)
+            if ev_stopped:
+                stopped = True
+
+    async def _read_stderr() -> None:
+        """Drain stderr (keep the pipe from blocking)."""
+        assert proc.stderr is not None
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+
     try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        # run both readers concurrently with a hard timeout
+        await asyncio.wait_for(
+            asyncio.gather(_read_stdout(), _read_stderr()),
+            timeout=timeout,
+        )
+        await proc.wait()
     except asyncio.TimeoutError:
         log.error("agent timed out after %.0fs — killing process group", timeout)
         await _kill_process_group(proc)
         result.timed_out = True
         result.error = f"timed out after {timeout}s"
-        # drain whatever output we can get (already in proc's pipes via communicate? no)
+        result.stdout = "\n".join(stdout_lines)
         return result
 
-    result.stdout = stdout_b.decode("utf-8", errors="replace")
-    result.stderr = stderr_b.decode("utf-8", errors="replace")
+    result.stdout = "\n".join(stdout_lines)
+    result.stderr = ""
 
-    # parse the JSON event stream from stdout
-    result.events, result.final_message, result.tokens_used, stopped = _parse_event_stream(result.stdout)
+    # parse the full event stream from collected stdout for the final result
+    result.events, result.final_message, result.tokens_used, parse_stopped = _parse_event_stream(result.stdout)
+    if parse_stopped:
+        stopped = True
     budget.budget.add(result.tokens_used)
 
     # Determine success. OpenCode signals clean completion via a step_finish
@@ -157,6 +193,53 @@ async def run_goal(
         result.ok, stopped, result.tokens_used, len(result.events), result.final_message[:80],
     )
     return result
+
+
+def _process_live_event(line: str) -> bool:
+    """Process a single NDJSON line as it arrives from the agent's stdout.
+
+    Emits activity events in real time (so the dashboard updates while the
+    agent works, not after it finishes). Returns True if this event signals
+    completion (step_finish with reason=stop).
+
+    This is the streaming counterpart of the parsing in _parse_event_stream —
+    the same logic, but called per-line as data arrives instead of on the
+    full buffer at the end.
+    """
+    line = line.strip()
+    if not line or not line.startswith("{"):
+        return False
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+
+    etype = event.get("type", "")
+    part = event.get("part") or {}
+
+    # emit activity for tool calls as they complete
+    if etype == "tool_use" and _activity_hook is not None:
+        tool = part.get("tool", "unknown")
+        state = part.get("state") or {}
+        inp = state.get("input") or part.get("input") or {}
+        title = state.get("title") or ""
+        if state.get("status") == "completed":
+            _emit_tool_activity(tool, inp, title)
+
+    # emit activity for assistant text messages (the agent's reasoning/output)
+    if etype == "text" and _activity_hook is not None:
+        text = part.get("text") or ""
+        if isinstance(text, str) and text.strip():
+            _activity_hook("system", text.strip()[:200], {})
+
+    # count tokens as they come in
+    if etype == "step_finish":
+        tokens = part.get("tokens") or {}
+        budget.budget.add(budget.extract_tokens_from_event({"usage": tokens}))
+        if part.get("reason") == "stop":
+            return True
+
+    return False
 
 
 def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int, bool]:
