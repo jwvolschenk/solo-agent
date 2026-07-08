@@ -461,9 +461,20 @@ function renderOrchestrator(o) {
 
 function renderActivity(events) {
   if (!events.length) return;
-  $('activityFeed').innerHTML = events.map(e => {
+  // deduplicate consecutive identical messages
+  const deduped = [];
+  for (const e of events) {
+    const prev = deduped[deduped.length - 1];
+    if (!prev || prev.message !== e.message) deduped.push(e);
+  }
+  const icons = { file: '📝', tool: '$', error: '✗', task: '✓', system: 'ℹ' };
+  $('activityFeed').innerHTML = deduped.map(e => {
     const t = new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    return `<div class="log-line ${e.type} pl-2 py-0.5"><span class="text-gray-600 mono">${t}</span> <span class="text-gray-300">${esc(e.message)}</span></div>`;
+    const icon = icons[e.type] || '•';
+    return `<div class="log-line ${e.type} pl-2 py-1 flex items-start gap-2">
+      <span class="text-gray-600 mono text-[10px] shrink-0">${t}</span>
+      <span class="text-gray-300 break-all">${esc(e.message)}</span>
+    </div>`;
   }).join('');
 }
 

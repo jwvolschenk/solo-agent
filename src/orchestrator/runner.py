@@ -206,11 +206,13 @@ def _parse_event_stream(stdout: str) -> tuple[list[dict], str, int, bool]:
         # emit activity events for notable tool calls so the dashboard shows what the agent is doing
         if etype == "tool_use" and _activity_hook is not None:
             tool = part.get("tool", "unknown")
-            inp = part.get("input") or {}
             state = part.get("state") or {}
-            # only log completed tool calls (not in-progress), and only the interesting ones
+            # OpenCode nests the actual tool input under state.input, not part.input
+            inp = state.get("input") or part.get("input") or {}
+            # also grab the title (OpenCode puts a human-readable summary there for bash calls)
+            title = state.get("title") or ""
             if state.get("status") == "completed":
-                _emit_tool_activity(tool, inp)
+                _emit_tool_activity(tool, inp, title)
 
     # fallback: if no JSON events at all, treat stdout (minus noise) as the message
     if not events and stdout.strip():
@@ -251,7 +253,7 @@ def _redact(argv: list[str]) -> str:
     return " ".join(out)
 
 
-def _emit_tool_activity(tool: str, inp: dict) -> None:
+def _emit_tool_activity(tool: str, inp: dict, title: str = "") -> None:
     """Translate a completed OpenCode tool call into an activity log entry.
 
     Only fires for tools that represent real, visible actions (file edits, shell,
@@ -273,17 +275,18 @@ def _emit_tool_activity(tool: str, inp: dict) -> None:
     if tool in ("edit", "write", "write_file", "create_file"):
         atype = "file"
         fp = inp.get("filePath") or inp.get("file_path") or inp.get("path") or ""
-        msg = f"{tool} {_short(fp)}"
+        verb = "edited" if tool == "edit" else "wrote"
+        msg = f"{verb} {_short(fp)}" if fp else f"{tool} (unknown file)"
         meta["file"] = fp
     elif tool in ("bash", "shell", "execute"):
         atype = "tool"
-        cmd = inp.get("command") or inp.get("cmd") or ""
-        msg = f"shell: {str(cmd)[:80]}"
+        cmd = inp.get("command") or inp.get("cmd") or title or ""
+        msg = f"$ {str(cmd).strip()[:100]}" if cmd else "shell command"
         meta["command"] = cmd
     elif tool in ("remove", "delete", "rm"):
         atype = "file"
         fp = inp.get("path") or inp.get("filePath") or ""
-        msg = f"delete {_short(fp)}"
+        msg = f"deleted {_short(fp)}" if fp else "deleted file"
         meta["file"] = fp
     else:
         # skip noisy read-only tools (read, glob, grep, tree, search, etc.)
