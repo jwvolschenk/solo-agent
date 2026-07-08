@@ -156,7 +156,9 @@ The orchestrator drives OpenCode via subprocess. It requires:
 
 The loop's contract with the agent:
 - Each goal runs in a **fresh context** (no session bleed — this is the Ralph principle).
+- The orchestrator writes a **`SOLO_AGENT.md`** protocol file into the target repo on start. Every fresh session reads it first to orient itself — it defines the worker's role, the full reflect→plan→execute→verify→record cycle, the artifact map (`backlog.md`, `reflections.md`, `skills/`), the rules (fresh context, stay in scope, never self-mark done, never touch `main`), and the `DONE:` stop signal.
 - The agent reads `backlog.md` and `reflections.md` (persistent memory) itself.
+- Phase prompts are deliberately short — they orient the session to its phase and point at `SOLO_AGENT.md`, rather than re-explaining the whole loop each cycle.
 - The agent **never** marks tasks done or merges to `BASE_BRANCH` — only the orchestrator's verify gate does.
 - On verify failure, the cycle's changes are **git-reverted** automatically.
 
