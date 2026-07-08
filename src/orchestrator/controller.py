@@ -153,7 +153,11 @@ class OrchestratorController:
             return "already running"
         guardrails.kill_switch.clear()
         # wire the runner's tool calls into the activity feed
-        set_activity_hook(lambda t, m, meta: insert_activity(ActivityEvent(type=t, message=m, metadata=meta)))  # type: ignore[arg-type]
+        set_activity_hook(
+            lambda t, m, meta: insert_activity(
+                ActivityEvent(type=t, message=m, metadata=meta, project_id=self.active_project_id)
+            )
+        )  # type: ignore[arg-type]
         self.state.running = True
         self.state.phase = "idle"
         self.state.last_error = None

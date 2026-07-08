@@ -101,6 +101,7 @@ class ActivityEvent(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     metadata: dict[str, Any] = Field(default_factory=dict)
     id: Optional[int] = None  # DB row id when read back
+    project_id: Optional[str] = None
 
 
 # ============================================================================

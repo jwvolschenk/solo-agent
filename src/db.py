@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS activity_log (
     timestamp    TEXT NOT NULL,
     type         TEXT NOT NULL,
     message      TEXT NOT NULL,
-    metadata_json TEXT
+    metadata_json TEXT,
+    project_id   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_activity_ts ON activity_log(timestamp DESC);
 
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS projects (
 # Wrapped in try/except so re-running init_db() on an existing DB is safe.
 _MIGRATIONS = [
     "ALTER TABLE cycles ADD COLUMN project_id TEXT",
+    "ALTER TABLE activity_log ADD COLUMN project_id TEXT",
 ]
 
 
@@ -236,12 +238,13 @@ def insert_activity(event) -> int:
 
     with write_conn() as c:
         cur = c.execute(
-            "INSERT INTO activity_log (timestamp, type, message, metadata_json) VALUES (?,?,?,?)",
+            "INSERT INTO activity_log (timestamp, type, message, metadata_json, project_id) VALUES (?,?,?,?,?)",
             (
                 event.timestamp.isoformat(),
                 event.type,
                 event.message,
                 json.dumps(event.metadata),
+                event.project_id,
             ),
         )
         _prune_activity(c)
@@ -260,7 +263,12 @@ def _prune_activity(c: sqlite3.Connection) -> None:
     )
 
 
-def fetch_activity(limit: int = 50) -> list[sqlite3.Row]:
+def fetch_activity(limit: int = 50, project_id: str = "") -> list[sqlite3.Row]:
+    if project_id:
+        return query_all(
+            "SELECT * FROM activity_log WHERE project_id = ? ORDER BY id DESC LIMIT ?",
+            (project_id, limit),
+        )
     return query_all(
         "SELECT * FROM activity_log ORDER BY id DESC LIMIT ?", (limit,)
     )

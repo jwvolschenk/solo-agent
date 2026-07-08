@@ -168,3 +168,42 @@ def test_config_set_verify_command(client):
 def test_config_rejects_nonexistent_path(client):
     r = client.put("/api/config", json={"project_path": "/nonexistent/xyz"})
     assert r.status_code == 400
+
+
+def test_activity_scoped_to_project(client, tmp_settings):
+    from datetime import datetime
+    from src.db import insert_project, set_active_project
+
+    now = datetime.utcnow().isoformat()
+    for pid, name in (("proj-a", "A"), ("proj-b", "B")):
+        insert_project({
+            "id": pid, "name": name, "goal": "", "project_path": str(tmp_settings.project_path),
+            "verify_command": "", "work_branch": "solo-agent/auto", "stop_after_cycle": 0,
+            "created_at": now, "updated_at": now,
+        })
+
+    set_active_project("proj-a")
+    r = client.post("/api/agent/activity", json={"type": "file", "message": "edited a.py"})
+    assert r.status_code == 201
+
+    set_active_project("proj-b")
+    r2 = client.post("/api/agent/activity", json={"type": "file", "message": "edited b.py"})
+    assert r2.status_code == 201
+
+    # active project is proj-b -- default GET should only see b's event
+    got = client.get("/api/agent/activity").json()["events"]
+    messages = {e["message"] for e in got}
+    assert "edited b.py" in messages
+    assert "edited a.py" not in messages
+
+    # explicit project_id still reachable
+    got_a = client.get("/api/agent/activity?project_id=proj-a").json()["events"]
+    assert any(e["message"] == "edited a.py" for e in got_a)
+
+
+def test_activity_log_schema_migration_is_idempotent(tmp_settings):
+    """The project_id column migration must not raise on a DB that already has it."""
+    from src.db import init_db
+
+    init_db()
+    init_db()
