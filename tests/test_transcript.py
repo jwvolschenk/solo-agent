@@ -1,5 +1,7 @@
 """Transcript ring buffer tests — Track B (rich, in-memory-only) activity."""
 
+import asyncio
+
 import pytest
 
 from src import transcript
@@ -75,6 +77,7 @@ async def test_record_broadcasts_via_registered_callback():
 
     transcript.set_broadcast(fake_broadcast)
     await transcript.record(_event(id="e1"))
+    await asyncio.sleep(0)  # let the fire-and-forget broadcast task run
     assert len(received) == 1
     assert received[0]["kind"] == "transcript_event"
     assert received[0]["op"] == "append"
@@ -89,4 +92,5 @@ async def test_broadcast_failure_is_swallowed():
     transcript.set_broadcast(bad_broadcast)
     # must not raise
     await transcript.record(_event(id="e1"))
+    await asyncio.sleep(0)  # let the fire-and-forget broadcast task run (and fail) before teardown
     assert len(transcript.snapshot()) == 1

@@ -98,6 +98,7 @@ class OrchestratorController:
         guardrails.loop_detector.reset()
         guardrails.no_progress.reset()
         transcript.clear()  # a new project's loop starts with a clean rich transcript
+        await transcript.notify_cleared()  # tell already-connected clients to drop stale transcript
         # resume the new project's persisted state
         self._resume()
         self.state.project_id = project_id

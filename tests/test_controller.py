@@ -141,3 +141,39 @@ async def test_switch_project_clears_transcript(controller_with_tmp_repo, tmp_pa
 
     await c.switch_project("other")
     assert transcript.snapshot() == []
+
+
+@pytest.mark.asyncio
+async def test_switch_project_notifies_already_connected_clients(controller_with_tmp_repo, tmp_path):
+    """A project switch must not just clear the server-side buffer -- it must
+    also tell already-connected dashboard clients to drop their own stale
+    transcript state, or a tab open across the switch keeps showing the
+    previous project's session cards until it happens to reconnect."""
+    from datetime import datetime
+
+    from src import transcript
+    from src.db import insert_project
+
+    c = controller_with_tmp_repo
+    saved_broadcast = transcript._broadcast
+    received = []
+
+    async def fake_broadcast(payload):
+        received.append(payload)
+
+    transcript.set_broadcast(fake_broadcast)
+    try:
+        other = tmp_path / "other-project-2"
+        other.mkdir()
+        now = datetime.utcnow().isoformat()
+        insert_project({
+            "id": "other2", "name": "Other2", "goal": "build y", "project_path": str(other),
+            "verify_command": "", "work_branch": "solo-agent/auto", "stop_after_cycle": 0,
+            "created_at": now, "updated_at": now,
+        })
+
+        await c.switch_project("other2")
+
+        assert {"kind": "transcript_backfill", "events": []} in received
+    finally:
+        transcript.set_broadcast(saved_broadcast)
