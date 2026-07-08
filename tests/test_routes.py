@@ -128,13 +128,16 @@ def test_config_get_and_set(client, tmp_path):
     # GET
     r = client.get("/api/config")
     assert r.status_code == 200
-    assert "project_path" in r.json()
+    data = r.json()
+    assert "project_path" in data
+    assert "goal" in data
+    assert "verify_command" in data
 
     # make a real dir to point at
     target = tmp_path / "myproject"
     target.mkdir()
 
-    # PUT
+    # PUT project_path
     r2 = client.put("/api/config", json={"project_path": str(target)})
     assert r2.status_code == 200
     assert r2.json()["project_path"] == str(target)
@@ -142,6 +145,24 @@ def test_config_get_and_set(client, tmp_path):
     # GET reflects the change
     r3 = client.get("/api/config")
     assert r3.json()["project_path"] == str(target)
+
+
+def test_config_set_goal(client):
+    r = client.put("/api/config", json={"goal": "Build a tower defense game"})
+    assert r.status_code == 200
+    assert r.json()["goal"] == "Build a tower defense game"
+    # GET reflects it
+    assert client.get("/api/config").json()["goal"] == "Build a tower defense game"
+
+
+def test_config_set_verify_command(client):
+    # empty string disables the gate
+    r = client.put("/api/config", json={"verify_command": ""})
+    assert r.status_code == 200
+    assert r.json()["verify_command"] == ""
+    # set it to something
+    r2 = client.put("/api/config", json={"verify_command": "pytest -q"})
+    assert r2.json()["verify_command"] == "pytest -q"
 
 
 def test_config_rejects_nonexistent_path(client):

@@ -27,14 +27,33 @@ def controller_with_tmp_repo(tmp_target_repo, monkeypatch, tmp_settings):
 
 
 @pytest.mark.asyncio
-async def test_start_requires_repo(controller_with_tmp_repo, monkeypatch):
-    # point at a non-repo path
-    monkeypatch.setattr(settings, "project_path", "/tmp")
+async def test_start_requires_goal(controller_with_tmp_repo, monkeypatch):
+    """Without a goal the loop refuses to start — there's nothing to drive toward."""
+    monkeypatch.setattr(settings, "goal", "")
     c = controller_with_tmp_repo
     c.state.cycle_number = 0
     msg = await c.start()
-    assert "not a git repository" in msg
+    assert "no goal" in msg
     assert c.state.phase == "error"
+
+
+@pytest.mark.asyncio
+async def test_start_auto_inits_non_git_dir(controller_with_tmp_repo, monkeypatch, tmp_path):
+    """An empty/non-git project_path gets git-init'd automatically (from-scratch case)."""
+    empty = tmp_path / "greenfield"
+    empty.mkdir()
+    monkeypatch.setattr(settings, "project_path", empty)
+    monkeypatch.setattr(settings, "goal", "build something")
+    monkeypatch.setattr(settings, "agent_command", "true {prompt}")  # no-op agent
+    monkeypatch.setattr(settings, "verify_command", "")  # no gate
+    from src.orchestrator import controller as ctlmod
+    c = ctlmod.controller
+    msg = await c.start()
+    # it should start (not error on missing repo) and git should now be initialized
+    assert msg == "started"
+    assert (empty / ".git").exists()
+    # stop immediately so we don't run a real cycle
+    await c.stop()
 
 
 @pytest.mark.asyncio
