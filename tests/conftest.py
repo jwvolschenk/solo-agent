@@ -43,6 +43,12 @@ llamacpp:n_decode_total 100
 # HELP llamacpp:n_tokens_max Largest observed n_tokens.
 # TYPE llamacpp:n_tokens_max counter
 llamacpp:n_tokens_max 5000
+# HELP llamacpp:kv_cache_tokens KV-cache tokens.
+# TYPE llamacpp:kv_cache_tokens gauge
+llamacpp:kv_cache_tokens 525
+# HELP llamacpp:kv_cache_usage_ratio KV-cache usage.
+# TYPE llamacpp:kv_cache_usage_ratio gauge
+llamacpp:kv_cache_usage_ratio 0.002
 # HELP llamacpp:prompt_tokens_seconds Average prompt throughput in tokens/s.
 # TYPE llamacpp:prompt_tokens_seconds gauge
 llamacpp:prompt_tokens_seconds 2450.0
@@ -71,7 +77,8 @@ SLOTS_CLASSIC = [
 SLOTS_CURRENT = [
     {"id": 0, "n_ctx": 262144, "speculative": False, "is_processing": False},
     {"id": 1, "n_ctx": 262144, "speculative": False, "is_processing": True,
-     "n_prompt_tokens": 500, "generated": "hello world",
+     "n_prompt_tokens": 500, "n_prompt_tokens_processed": 500, "n_prompt_tokens_cache": 0,
+     "generated": "hello world",
      "next_token": {"n_decoded": 25, "has_next_token": True}},
 ]
 

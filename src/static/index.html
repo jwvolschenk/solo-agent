@@ -446,32 +446,55 @@ function renderHealth(h) {
   txt.textContent = labels[h.status] || h.status;
 }
 
-// Track context metrics across render calls (n_ctx from slots, n_tokens_max from metrics)
-let _nCtx = 0, _nTokensMax = 0;
+// Track context metrics across render calls (n_ctx from slots, live fill from slots/metrics)
+let _nCtx = 0, _nCtxTokens = 0, _lastMetrics = null, _lastSlots = [];
+
+function slotContextTokens(s) {
+  const prompt = s.n_prompt_tokens ?? ((s.n_prompt_tokens_processed ?? 0) + (s.n_prompt_tokens_cache ?? 0));
+  return prompt + (s.n_decoded ?? 0);
+}
+
+function computeLiveContext(slots, metrics) {
+  const processing = slots.filter(s => s.is_processing);
+  if (processing.length) {
+    return Math.max(...processing.map(slotContextTokens));
+  }
+  if (slots.length) {
+    const fromSlots = Math.max(0, ...slots.map(slotContextTokens));
+    if (fromSlots > 0) return fromSlots;
+  }
+  if (metrics?.kv_cache_tokens != null) return metrics.kv_cache_tokens;
+  return 0;
+}
 
 function _updateCtxBar() {
   if (!_nCtx) return;
-  const pct = _nTokensMax > 0 ? Math.min(100, (_nTokensMax / _nCtx) * 100) : 0;
+  const pct = _nCtxTokens > 0 ? Math.min(100, (_nCtxTokens / _nCtx) * 100) : 0;
   $('ctxBar').style.width = pct.toFixed(1) + '%';
-  $('ctxPct').textContent = `${fmt(_nTokensMax)} / ${fmt(_nCtx)} (${pct.toFixed(0)}%)`;
+  $('ctxPct').textContent = `${fmt(_nCtxTokens)} / ${fmt(_nCtx)} (${pct.toFixed(0)}%)`;
+}
+
+function _refreshContextUsage() {
+  _nCtxTokens = computeLiveContext(_lastSlots, _lastMetrics);
+  _updateCtxBar();
 }
 
 function renderMetrics(m) {
   $('totalTokens').textContent = fmt((m.prompt_tokens_total || 0) + (m.tokens_predicted_total || 0));
   $('queueInfo').textContent = `${m.requests_processing ?? 0} proc / ${m.requests_deferred ?? 0} queue`;
-  // context usage: n_tokens_max is the high-water mark of tokens in context
-  _nTokensMax = m.n_tokens_max || _nTokensMax;
-  _updateCtxBar();
+  _lastMetrics = m;
+  _refreshContextUsage();
 }
 
 function renderSlots(slots) {
-  if (!slots.length) { $('slotsInfo').textContent = '—'; return; }
+  if (!slots.length) { $('slotsInfo').textContent = '—'; _lastSlots = []; _refreshContextUsage(); return; }
   const total = slots.length;
   const busy = slots.filter(s => s.is_processing).length;
   $('slotsInfo').textContent = `${total - busy}/${total} idle`;
   const nctx = slots[0]?.n_ctx;
   if (nctx) { _nCtx = nctx; $('ctxSize').textContent = fmt(nctx); }
-  _updateCtxBar();
+  _lastSlots = slots;
+  _refreshContextUsage();
 }
 
 // Phase timeline: ordered list of cycle phases. Node states: dim / active (pulsing) / done (green).

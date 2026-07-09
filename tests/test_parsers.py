@@ -1,6 +1,13 @@
 """Parser tests — both classic (b2700) and current (master) llama-server schemas."""
 
-from src.parsers import parse_health, parse_prometheus, parse_props, parse_slots
+from src.parsers import (
+    live_context_tokens,
+    parse_health,
+    parse_prometheus,
+    parse_props,
+    parse_slots,
+    slot_context_tokens,
+)
 
 
 # -- Prometheus ---------------------------------------------------------------
@@ -15,6 +22,8 @@ def test_prometheus_parses_all_known_metrics(prometheus_text):
     assert snap.requests_processing == 1
     assert snap.requests_deferred == 0
     assert snap.n_tokens_max == 5000
+    assert snap.kv_cache_tokens == 525
+    assert snap.kv_cache_usage_ratio == 0.002
     assert snap.n_decode_total == 100
 
 
@@ -51,8 +60,42 @@ def test_slots_current_schema(slots_current):
     assert slots[0].is_processing is False
     assert slots[1].is_processing is True
     assert slots[1].n_decoded == 25  # pulled from next_token
+    assert slots[1].n_prompt_tokens == 500
+    assert slots[1].n_prompt_tokens_processed == 500
     assert slots[1].generated_text == "hello world"
     assert slots[0].n_ctx == 262144
+
+
+def test_slot_context_tokens_active_slot(slots_current):
+    slots = parse_slots(slots_current)
+    assert slot_context_tokens(slots[1]) == 525  # 500 prompt + 25 decoded
+
+
+def test_live_context_tokens_prefers_processing_slot(slots_current):
+    slots = parse_slots(slots_current)
+    snap = parse_prometheus(
+        "llamacpp:kv_cache_tokens 9999\nllamacpp:kv_cache_usage_ratio 0.5\n"
+    )
+    assert live_context_tokens(slots, snap) == 525
+
+
+def test_live_context_tokens_idle_uses_cache_fields():
+    slots = parse_slots([
+        {"id": 0, "n_ctx": 4096, "is_processing": False,
+         "n_prompt_tokens_cache": 1200, "next_token": {"n_decoded": 0}},
+    ])
+    assert live_context_tokens(slots) == 1200
+
+
+def test_live_context_tokens_falls_back_to_kv_cache_gauge():
+    slots = parse_slots([{"id": 0, "n_ctx": 4096, "is_processing": False}])
+    snap = parse_prometheus("llamacpp:kv_cache_tokens 800\n")
+    assert live_context_tokens(slots, snap) == 800
+
+
+def test_live_context_tokens_zero_when_idle_and_empty():
+    slots = parse_slots([{"id": 0, "n_ctx": 4096, "is_processing": False}])
+    assert live_context_tokens(slots) == 0
 
 
 def test_slots_classic_schema(slots_classic):

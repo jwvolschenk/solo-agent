@@ -67,6 +67,8 @@ def parse_prometheus(text: str) -> MetricsSnapshot:
         tokens_predicted_seconds_total=_get_float("tokens_predicted_seconds_total"),
         n_decode_total=_get_int("n_decode_total"),
         n_tokens_max=_get_int("n_tokens_max"),
+        kv_cache_tokens=_get_int("kv_cache_tokens"),
+        kv_cache_usage_ratio=_get_float("kv_cache_usage_ratio"),
         requests_processing=_get_int("requests_processing"),
         requests_deferred=_get_int("requests_deferred"),
         n_busy_slots_per_decode=_get_float("n_busy_slots_per_decode"),
@@ -115,6 +117,8 @@ def parse_slots(data: Any) -> list[SlotInfo]:
                 n_ctx=int(raw_slot.get("n_ctx", 0) or 0),
                 is_processing=is_processing,
                 n_prompt_tokens=_opt_int(raw_slot.get("n_prompt_tokens")),
+                n_prompt_tokens_processed=_opt_int(raw_slot.get("n_prompt_tokens_processed")),
+                n_prompt_tokens_cache=_opt_int(raw_slot.get("n_prompt_tokens_cache")),
                 n_decoded=_opt_int(n_decoded),
                 generated_text=generated if isinstance(generated, str) else None,
                 model=raw_slot.get("model") if isinstance(raw_slot.get("model"), str) else None,
@@ -223,6 +227,42 @@ def parse_props(data: Any) -> Props:
         params=params,
         raw=data,
     )
+
+
+# ----------------------------------------------------------------------------
+# Live context helpers
+# ----------------------------------------------------------------------------
+
+
+def slot_context_tokens(slot: SlotInfo) -> int:
+    """Estimate tokens currently occupying a slot's KV cache.
+
+    llama-server exposes prompt totals on /slots; during generation ``n_decoded``
+    grows on each poll. Between agent turns the slot may be idle while the cache
+    persists — ``n_prompt_tokens_cache`` captures that retained fill.
+    """
+    if slot.n_prompt_tokens is not None:
+        prompt = slot.n_prompt_tokens
+    else:
+        prompt = (slot.n_prompt_tokens_processed or 0) + (slot.n_prompt_tokens_cache or 0)
+    return prompt + (slot.n_decoded or 0)
+
+
+def live_context_tokens(
+    slots: list[SlotInfo],
+    metrics: Optional[MetricsSnapshot] = None,
+) -> int:
+    """Best-effort current context fill for the active execution cycle."""
+    processing = [s for s in slots if s.is_processing]
+    if processing:
+        return max(slot_context_tokens(s) for s in processing)
+    if slots:
+        from_slots = max(slot_context_tokens(s) for s in slots)
+        if from_slots > 0:
+            return from_slots
+    if metrics is not None and metrics.kv_cache_tokens is not None:
+        return metrics.kv_cache_tokens
+    return 0
 
 
 # ----------------------------------------------------------------------------

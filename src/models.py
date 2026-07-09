@@ -45,7 +45,11 @@ class MetricsSnapshot(BaseModel):
     prompt_seconds_total: Optional[float] = None
     tokens_predicted_seconds_total: Optional[float] = None
     n_decode_total: Optional[int] = None
-    n_tokens_max: Optional[int] = None
+    n_tokens_max: Optional[int] = None  # lifetime high-water mark — not live context
+
+    # Live KV-cache gauges (current fill, not cumulative)
+    kv_cache_tokens: Optional[int] = None
+    kv_cache_usage_ratio: Optional[float] = None
 
     # Queue/slots (gauges)
     requests_processing: Optional[int] = None
@@ -66,6 +70,8 @@ class SlotInfo(BaseModel):
     is_processing: bool = False
     # current schema fields (nested or otherwise) — present when available
     n_prompt_tokens: Optional[int] = None
+    n_prompt_tokens_processed: Optional[int] = None
+    n_prompt_tokens_cache: Optional[int] = None
     n_decoded: Optional[int] = None  # pulled from next_token when present
     generated_text: Optional[str] = None  # 'generated' field on current schema
     model: Optional[str] = None  # classic schema only
