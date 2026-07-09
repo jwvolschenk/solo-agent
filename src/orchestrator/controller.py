@@ -248,10 +248,11 @@ class OrchestratorController:
     async def _run_cycle(self) -> None:
         """One cycle. The cycle shape adapts to the backlog state:
 
-        - If there are PENDING (unchecked) backlog tasks → EXECUTE them directly.
-          No reflect/plan — the backlog is the plan. Churn through it.
+        - If there are PENDING (unchecked) backlog tasks → EXECUTE the first one.
+          One task per cycle; remaining backlog items wait for later cycles.
         - If there are NO pending tasks → ARCHIVE completed items to a dated
-          history file, then REFLECT+PLAN to find new work and refill the backlog.
+          history file, then REFLECT (find candidates) and PLAN (decompose &
+          order) to refill the backlog.
 
         This prevents the "continuously moving target" problem: the agent
         finishes existing goals before looking for new ones.
@@ -270,6 +271,7 @@ class OrchestratorController:
         self.state.cycle_tokens_used = 0
         self.state.current_task = None
         self.state.agent_session_id = None
+        artifacts.relocate_stale_seeds()
 
         rec = CycleRecord(cycle_number=cycle, phase="execute", project_id=self.active_project_id)
         self._current_cycle_id = insert_cycle(rec)
@@ -280,64 +282,70 @@ class OrchestratorController:
         tasks_passed = 0
         gate = verify_enabled()
 
-        # --- Check the backlog: are there pending tasks? ---
+        # --- Check the backlog: are there pending executor tasks? ---
         backlog_tasks = parse_tasks(artifacts.read_backlog())
-        pending = [t for t in backlog_tasks if t.status == "todo"]
+        pending = [
+            t for t in backlog_tasks
+            if t.status == "todo" and not artifacts.is_planner_only_task(t.text)
+        ]
 
         if pending:
-            # ---- EXECUTE PATH: churn through outstanding backlog work ----
-            log.info("[cycle %d] %d pending backlog task(s) — executing", cycle, len(pending))
+            if guardrails.kill_switch.engaged:
+                self.state.phase = "idle"
+                self._persist()
+                return
+            # ---- EXECUTE PATH: one backlog task per cycle ----
+            task = pending[0]
+            log.info(
+                "[cycle %d] executing 1 of %d pending backlog task(s): %s",
+                cycle, len(pending), task.text[:80],
+            )
             self.state.phase = "execute"
             self._persist()
-            max_tasks = min(len(pending), 3)
-            for task in pending[:max_tasks]:
-                if guardrails.kill_switch.engaged:
-                    break
-                tasks_attempted += 1
-                self.state.current_task = task.text
-                self._persist()
-                log.info("[cycle %d] EXECUTE: %s", cycle, task.text[:80])
+            tasks_attempted = 1
+            self.state.current_task = task.text
+            self._persist()
 
-                sid = new_session_id()
-                await transcript.record(TranscriptEvent(
-                    id=sid, kind="session_start", status="running",
-                    session_id=sid, cycle=cycle, task=task.text,
-                ))
-                task_snap = await snapshot()
-                memory_brief = build_memory_brief()
-                res = await run_goal(
-                    prompts.execute_prompt(cycle, task.text, memory_brief=memory_brief),
-                    title=f"solo cycle {cycle} task",
-                    session_id=sid,
-                )
-                await transcript.record(TranscriptEvent(
-                    id=f"{sid}-end", kind="session_end",
-                    status="completed" if res.ok else "error",
-                    session_id=sid, cycle=cycle, task=task.text,
-                ))
-                self.state.cycle_tokens_used = budget.budget.cycle_tokens
-                self.state.agent_session_id = res.session_id
-                self._persist()
+            sid = new_session_id()
+            await transcript.record(TranscriptEvent(
+                id=sid, kind="session_start", status="running",
+                session_id=sid, cycle=cycle, task=task.text,
+            ))
+            task_snap = await snapshot()
+            memory_brief = build_memory_brief()
+            res = await run_goal(
+                prompts.execute_prompt(cycle, task.text, memory_brief=memory_brief),
+                title=f"solo cycle {cycle} task",
+                session_id=sid,
+            )
+            await transcript.record(TranscriptEvent(
+                id=f"{sid}-end", kind="session_end",
+                status="completed" if res.ok else "error",
+                session_id=sid, cycle=cycle, task=task.text,
+            ))
+            self.state.cycle_tokens_used = budget.budget.cycle_tokens
+            self.state.agent_session_id = res.session_id
+            self._persist()
 
-                if not res.ok:
-                    log.warning("[cycle %d] task agent failed: %s", cycle, res.error)
-                    if gate and task_snap:
+            if not res.ok:
+                log.warning("[cycle %d] task agent failed: %s", cycle, res.error)
+                if gate and task_snap:
+                    await revert_to(task_snap)
+            elif gate:
+                self.state.phase = "verify"
+                self._persist()
+                verify = await run_verify()
+                if not verify.ok:
+                    log.warning("[cycle %d] VERIFY FAIL, reverting: %s", cycle, verify.summary())
+                    if task_snap:
                         await revert_to(task_snap)
-                    continue
-
-                # verify (only if a gate is configured)
-                if gate:
-                    self.state.phase = "verify"
-                    self._persist()
-                    verify = await run_verify()
-                    if not verify.ok:
-                        log.warning("[cycle %d] VERIFY FAIL, reverting: %s", cycle, verify.summary())
-                        if task_snap:
-                            await revert_to(task_snap)
-                        continue
-
-                # commit the work
-                tasks_passed += 1
+                else:
+                    tasks_passed = 1
+                    await stage_all()
+                    await commit_all(f"solo-agent cycle {cycle}: {task.text[:72]}")
+                    log.info("[cycle %d] task committed", cycle)
+            else:
+                tasks_passed = 1
                 await stage_all()
                 await commit_all(f"solo-agent cycle {cycle}: {task.text[:72]}")
                 log.info("[cycle %d] task committed", cycle)
@@ -377,14 +385,14 @@ class OrchestratorController:
                 await commit_all(f"solo-agent cycle {cycle}: archive {archived} completed backlog items")
                 log.info("[cycle %d] archived %d completed items", cycle, archived)
 
-            # Step 2: reflect + plan to find new work
+            # Step 2: reflect to find candidate work
             self.state.phase = "reflect"
             self._persist()
             sid = new_session_id()
             memory_brief = build_memory_brief()
             await transcript.record(TranscriptEvent(
                 id=sid, kind="session_start", status="running",
-                session_id=sid, cycle=cycle, task="reflect + plan",
+                session_id=sid, cycle=cycle, task="reflect",
             ))
             reflect = await run_goal(
                 prompts.reflect_prompt(cycle, memory_brief=memory_brief),
@@ -394,7 +402,7 @@ class OrchestratorController:
             await transcript.record(TranscriptEvent(
                 id=f"{sid}-end", kind="session_end",
                 status="completed" if reflect.ok else "error",
-                session_id=sid, cycle=cycle, task="reflect + plan",
+                session_id=sid, cycle=cycle, task="reflect",
             ))
             self.state.cycle_tokens_used = budget.budget.cycle_tokens
             self.state.agent_session_id = reflect.session_id
@@ -409,39 +417,72 @@ class OrchestratorController:
                 await self._maybe_pause_on_stall(cycle)
                 return
 
-            # check if reflect added new tasks. If not, the orchestrator directs
-            # the agent itself — inject a generic, project-agnostic improvement
-            # task rather than pausing the loop and waiting for a human. This is
-            # what keeps a 24/7 loop 24/7: the human-facing pause is reserved for
-            # the stall/failure guardrails below, not "couldn't think of anything".
-            backlog_tasks = parse_tasks(artifacts.read_backlog())
-            new_pending = [t for t in backlog_tasks if t.status == "todo"]
+            # Step 3: ensure planner inbox has candidates (orchestrator seed if
+            # reflect found nothing — PLAN decomposes into backlog.md next).
+            candidate_tasks = parse_tasks(artifacts.read_candidates())
+            pending_candidates = [t for t in candidate_tasks if t.status == "todo"]
             fallback_task: Optional[str] = None
-            if not new_pending:
-                fallback_task = artifacts.append_fallback_task(cycle)
-                log.info("[cycle %d] reflect produced no new tasks; orchestrator injected a fallback", cycle)
-                backlog_tasks = parse_tasks(artifacts.read_backlog())
-                new_pending = [t for t in backlog_tasks if t.status == "todo"]
+            if not pending_candidates:
+                fallback_task = artifacts.append_fallback_candidate(cycle)
+                log.info("[cycle %d] reflect produced no candidates; orchestrator seeded fallback", cycle)
+                candidate_tasks = parse_tasks(artifacts.read_candidates())
+                pending_candidates = [t for t in candidate_tasks if t.status == "todo"]
+
+            # Step 4: plan — decompose candidate themes into backlog.md tasks.
+            plan_summary = ""
+            if pending_candidates:
+                self.state.phase = "plan"
+                self._persist()
+                plan_sid = new_session_id()
+                await transcript.record(TranscriptEvent(
+                    id=plan_sid, kind="session_start", status="running",
+                    session_id=plan_sid, cycle=cycle, task="plan",
+                ))
+                plan = await run_goal(
+                    prompts.plan_prompt(cycle, memory_brief=memory_brief),
+                    title=f"solo cycle {cycle} plan",
+                    session_id=plan_sid,
+                )
+                await transcript.record(TranscriptEvent(
+                    id=f"{plan_sid}-end", kind="session_end",
+                    status="completed" if plan.ok else "error",
+                    session_id=plan_sid, cycle=cycle, task="plan",
+                ))
+                self.state.cycle_tokens_used = budget.budget.cycle_tokens
+                self.state.agent_session_id = plan.session_id
+                self._persist()
+                if not plan.ok:
+                    log.warning("[cycle %d] PLAN failed: %s", cycle, plan.error)
+                    plan_summary = f" Plan failed ({plan.error or 'unknown'}); backlog unchanged."
+                else:
+                    plan_summary = f" Plan: {plan.final_message[:200]}"
+
+            backlog_tasks = parse_tasks(artifacts.read_backlog())
+            new_pending = [
+                t for t in backlog_tasks
+                if t.status == "todo" and not artifacts.is_planner_only_task(t.text)
+            ]
 
             head = await snapshot()
             lines = await diff_stat(snap) if snap else 0
             outcome = "passed"
             if fallback_task:
                 reflection_text = (
-                    f"Archived {archived} completed items. Reflect found no new work, so "
-                    f"the orchestrator injected a fallback improvement task to keep the "
-                    f"loop moving: {fallback_task}"
+                    f"Archived {archived} completed items. Reflect found no candidates, so "
+                    f"the orchestrator seeded backlog-candidates.md for PLAN to "
+                    f"decompose: {fallback_task}.{plan_summary}"
                 )
             else:
                 reflection_text = (
                     f"Archived {archived} completed items, then reflected: "
-                    f"{len(new_pending)} new task(s) added. {reflect.final_message[:200]}"
+                    f"{len(new_pending)} ready task(s) after plan."
+                    f" Reflect: {reflect.final_message[:120]}.{plan_summary}"
                 )
             artifacts.append_reflection(reflection_text, cycle=cycle, outcome=outcome, sha=head)
             await self._record_cycle(
                 cycle, outcome=outcome, sha=snap, head_sha=head, lines=lines,
                 tokens=budget.budget.cycle_tokens, attempted=0, passed=0,
-                summary=reflect.final_message[:500],
+                summary=(reflect.final_message[:250] + plan_summary)[:500],
             )
             self._update_stall_counters(lines, 1, 1)
 

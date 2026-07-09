@@ -24,6 +24,7 @@ codedb.snapshot
 
 # Agent workspace artifacts (created at runtime, not committed)
 workspace/backlog.md
+workspace/backlog-candidates.md
 workspace/reflections.md
 
 # IDE

@@ -138,6 +138,30 @@ def test_archive_backlog_nothing_done_returns_zero(tmp_settings):
     assert artifacts.archive_backlog() == 0
 
 
+def test_relocate_stale_seeds_moves_planner_lines(tmp_settings):
+    from src.orchestrator import artifacts
+    from src.state_reader import parse_tasks
+
+    backlog = artifacts.backlog_path()
+    candidates = artifacts.candidates_path()
+    backlog.parent.mkdir(parents=True, exist_ok=True)
+    backlog.write_text(
+        "# Backlog\n\n"
+        "- [ ] (orchestrator seed, cycle 2) theme line\n"
+        "- [ ] ship feature A\n",
+        encoding="utf-8",
+    )
+    candidates.write_text("# Backlog Candidates\n\n", encoding="utf-8")
+
+    moved = artifacts.relocate_stale_seeds()
+    assert moved == 1
+    assert "ship feature A" in backlog.read_text()
+    assert "theme line" not in backlog.read_text()
+    seeds = [t.text for t in parse_tasks(artifacts.read_candidates()) if t.status == "todo"]
+    assert len(seeds) == 1
+    assert "orchestrator seed" in seeds[0]
+
+
 def test_compact_reflections_archives_old_entries(tmp_settings, monkeypatch):
     from src.orchestrator import artifacts
 

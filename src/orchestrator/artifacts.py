@@ -4,7 +4,8 @@ Per the Ralph + Reflexion design, these cross cycle boundaries (and ONLY these):
   - SOLO_AGENT.md     the loop constitution: role, cycle, artifact map, rules.
                       Written once by the orchestrator; read by every fresh
                       session so the agent knows how to execute the loop.
-  - backlog.md        the PRD / task list (mutated by the plan phase)
+  - backlog.md              executor queue — one-session tasks only (PLAN writes, EXECUTE reads)
+  - backlog-candidates.md   planner inbox — coarse themes from REFLECT + orchestrator seeds
   - reflections.md    rolling recent memory; older entries in reflections-archive/
   - skills/           index of reusable tests/snippets the agent produced
 
@@ -52,13 +53,19 @@ The orchestrator (a separate process) drives this loop. It spawns a fresh sessio
 for each task or reflection. The loop is **backlog-first**:
 
     EXECUTE pending tasks → ... → when backlog is clear:
-      ARCHIVE done items → REFLECT to find new work → refill backlog → repeat
+      ARCHIVE done items → REFLECT (find candidates) → PLAN (decompose & order)
+      → refill backlog → repeat
 
-- **EXECUTE** (most cycles): the orchestrator picks the next `- [ ]` task from
-  backlog.md and asks you to implement it. Churn through ALL pending tasks first.
+- **EXECUTE** (most cycles): the orchestrator picks the **next** `- [ ]` task from
+  backlog.md and asks you to implement it — **one task per cycle**. Finish the
+  backlog one item at a time; reflection only happens when it's clear.
 - **REFLECT** (only when backlog is empty): survey the project vs. the goal and
-  propose the next round of tasks to refill the backlog. The orchestrator archives
-  completed items into `backlog-history/` before calling you.
+  append coarse candidates to `backlog-candidates.md` (not backlog.md). Pending
+  human directives go straight to `backlog.md` as ready work. The orchestrator
+  archives completed items into `backlog-history/` before calling you.
+- **PLAN** (immediately after REFLECT): read `backlog-candidates.md`, decompose
+  each theme into small one-session tasks in `backlog.md`, then clear the
+  candidates file. The executor never reads backlog-candidates.md.
 - **VERIFY**: run by the ORCHESTRATOR *only if a verify command is configured*.
   Otherwise YOU own verification — run whatever build/test/lint/check this project
   uses before declaring a task complete.
@@ -76,7 +83,8 @@ Since your session is wiped each time, your only memory is these files:
 | `SOLO_AGENT.md` | this protocol | read first, every session |
 | `directives.md` | human guidance queued for you | read every session — pending directives are PRIORITY work |
 | `reflections.md` | recent failures + reflect insights (bounded) | read each session — avoid repeating mistakes |
-| `backlog.md` | the task list | REFLECT adds to it; EXECUTE pulls the next `- [ ]` task |
+| `backlog-candidates.md` | planner inbox (coarse themes) | REFLECT + orchestrator seeds append here; PLAN consumes and clears |
+| `backlog.md` | executor queue (one-session tasks) | PLAN writes ready tasks; EXECUTE pulls the next `- [ ]` |
 | `skills/INDEX.md` | reusable snippets/tests the loop produced | consult before implementing |
 
 ## Directives (human steering)
@@ -95,7 +103,8 @@ Since your session is wiped each time, your only memory is these files:
 
 1. **Fresh context.** Never assume state from a prior session — re-read the files.
 2. **Backlog-first.** Don't propose new work while backlog items are pending.
-   Churn through the existing backlog; reflection only happens when it's clear.
+   The executor takes one backlog item per cycle; reflection only happens when
+   the executor queue is clear.
 3. **Mark tasks done.** When you complete a task (or find it's already done),
    edit its backlog.md line from `- [ ]` to `- [x]`. This is required — it's
    how progress is tracked.
@@ -145,6 +154,20 @@ def backlog_path() -> Path:
     return _workspace() / "backlog.md"
 
 
+def candidates_path() -> Path:
+    return _workspace() / "backlog-candidates.md"
+
+
+# Lines in backlog.md matching this are planner-only and must not reach EXECUTE.
+_SEED_MARKERS = ("(orchestrator seed", "(orchestrator-injected")
+
+
+def is_planner_only_task(text: str) -> bool:
+    """True for orchestrator seed lines that belong in backlog-candidates.md."""
+    lowered = text.lower()
+    return any(marker in lowered for marker in _SEED_MARKERS)
+
+
 def reflections_path() -> Path:
     return _workspace() / "reflections.md"
 
@@ -169,10 +192,16 @@ def ensure_artifacts() -> None:
     if not backlog_path().exists():
         backlog_path().write_text(
             "# Backlog\n\n"
-            "# Tasks the solo-agent loop works through. Each cycle: the reflect\n"
-            "# phase regenerates candidates, the plan phase structures them here,\n"
-            "# the execute phase picks the next unchecked item as a goal.\n\n"
-            "- [ ] (sample) Add a README quickstart section\n",
+            "# Executor queue: one-session tasks only. PLAN writes here after\n"
+            "# decomposing themes from backlog-candidates.md.\n\n",
+            encoding="utf-8",
+        )
+    if not candidates_path().exists():
+        candidates_path().write_text(
+            "# Backlog Candidates\n\n"
+            "# Planner inbox: coarse themes from REFLECT and orchestrator seeds.\n"
+            "# PLAN decomposes these into backlog.md, then clears this file.\n"
+            "# The executor never reads this file.\n\n",
             encoding="utf-8",
         )
     if not reflections_path().exists():
@@ -196,11 +225,49 @@ def ensure_artifacts() -> None:
             "# Skill Index\n\nReusable artifacts produced across cycles.\n\n",
             encoding="utf-8",
         )
+    relocate_stale_seeds()
 
 
 def read_backlog() -> str:
     p = backlog_path()
     return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
+
+
+def read_candidates() -> str:
+    p = candidates_path()
+    return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
+
+
+def _append_line(path: Path, line: str) -> None:
+    content = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    sep = "\n" if content and not content.endswith("\n") else ""
+    path.write_text(content + sep + line + "\n", encoding="utf-8")
+
+
+def relocate_stale_seeds() -> int:
+    """Move orchestrator seed lines from backlog.md into backlog-candidates.md.
+
+    Handles legacy state where seeds were written directly to the executor queue.
+    Returns the number of lines relocated.
+    """
+    content = read_backlog()
+    if not content:
+        return 0
+    moved: list[str] = []
+    keep: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("- [", "* [")) and is_planner_only_task(stripped):
+            moved.append(stripped)
+        else:
+            keep.append(line)
+    if not moved:
+        return 0
+    for item in moved:
+        _append_line(candidates_path(), item)
+    backlog_path().write_text("\n".join(keep).rstrip() + ("\n" if keep else ""), encoding="utf-8")
+    log.info("relocated %d planner seed(s) from backlog.md to backlog-candidates.md", len(moved))
+    return len(moved)
 
 
 # Rotating, project-agnostic categories for the orchestrator-injected fallback
@@ -218,26 +285,25 @@ _FALLBACK_CATEGORIES = [
 ]
 
 
-def append_fallback_task(cycle: int) -> str:
-    """Append one orchestrator-authored, project-agnostic backlog task.
+def append_fallback_candidate(cycle: int) -> str:
+    """Append one coarse orchestrator seed to backlog-candidates.md for PLAN.
 
-    Called when the REFLECT phase comes back with zero new tasks — rather than
-    pausing the loop and waiting for a human, the orchestrator directs the
-    agent itself so the 24/7 loop keeps moving. The category rotates
-    deterministically by cycle number (no randomness) so repeated empty
-    reflects don't just repeat the same nudge. Returns the appended task text.
+    Called when REFLECT produces no candidates. PLAN decomposes this into
+    one-session tasks in backlog.md. The executor never sees this file.
     """
     category = _FALLBACK_CATEGORIES[cycle % len(_FALLBACK_CATEGORIES)]
     task = (
-        f"- [ ] (orchestrator-injected, cycle {cycle}) Reflect found no new work — "
-        f"survey the project for a {category} improvement, and implement one "
-        f"concrete, high-value change."
+        f"- [ ] (orchestrator seed, cycle {cycle}) Next improvement theme: "
+        f"{category} — survey the project vs. GOAL.md and queue concrete work"
     )
-    content = read_backlog()
-    sep = "\n" if content and not content.endswith("\n") else ""
-    backlog_path().write_text(content + sep + task + "\n", encoding="utf-8")
-    log.info("[cycle %d] injected fallback backlog task: %s", cycle, category)
+    _append_line(candidates_path(), task)
+    log.info("[cycle %d] seeded planner candidate: %s", cycle, category)
     return task
+
+
+def append_fallback_task(cycle: int) -> str:
+    """Deprecated alias — seeds go to backlog-candidates.md, not backlog.md."""
+    return append_fallback_candidate(cycle)
 
 
 def history_dir() -> Path:

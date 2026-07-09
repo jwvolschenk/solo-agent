@@ -124,8 +124,9 @@ async def test_reflect_empty_injects_fallback_task_instead_of_pausing(
     controller_with_tmp_repo, tmp_target_repo, mock_agent_script, monkeypatch
 ):
     """When the backlog is empty and REFLECT finds no new work, the orchestrator
-    must keep the 24/7 loop moving by injecting a generic fallback task itself
+    must keep the 24/7 loop moving by seeding a coarse theme for PLAN to decompose,
     rather than pausing and waiting for a human."""
+    from src import transcript
     from src.orchestrator import artifacts
     from src.state_reader import parse_tasks
 
@@ -141,15 +142,142 @@ async def test_reflect_empty_injects_fallback_task_instead_of_pausing(
     # no pending tasks -> REFLECT path runs.
     (tmp_target_repo / "backlog.md").write_text("# Backlog\n")
     c.state.running = True  # simulate an active loop, as start() would set
+    transcript.clear()
 
     await c._run_cycle()
 
     assert c.state.phase == "idle"
     assert c.state.running is True  # must NOT be force-stopped just because reflect found nothing
-    tasks = parse_tasks(artifacts.read_backlog())
-    pending = [t for t in tasks if t.status == "todo"]
-    assert len(pending) == 1
-    assert "orchestrator-injected" in pending[0].text
+    candidates = parse_tasks(artifacts.read_candidates())
+    pending_candidates = [t for t in candidates if t.status == "todo"]
+    assert len(pending_candidates) == 1
+    assert "orchestrator seed" in pending_candidates[0].text
+    backlog_pending = [
+        t for t in parse_tasks(artifacts.read_backlog()) if t.status == "todo"
+    ]
+    assert backlog_pending == []
+
+    snap = transcript.snapshot()
+    starts = [e for e in snap if e.kind == "session_start"]
+    assert [e.task for e in starts] == ["reflect", "plan"]
+
+
+@pytest.mark.asyncio
+async def test_reflect_path_runs_separate_plan_session(
+    controller_with_tmp_repo, tmp_target_repo, monkeypatch
+):
+    """REFLECT and PLAN must be distinct sessions; PLAN should decompose coarse
+    reflect output before the next EXECUTE cycle."""
+    import textwrap
+    from src import transcript
+    from src.orchestrator import artifacts
+    from src.state_reader import parse_tasks
+
+    phase_agent = tmp_target_repo / "phase_agent.py"
+    repo = str(tmp_target_repo)
+    phase_agent.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json, sys
+        from pathlib import Path
+        prompt = sys.argv[-1] if len(sys.argv) > 1 else ""
+        root = Path({repo!r})
+        candidates = root / "backlog-candidates.md"
+        backlog = root / "backlog.md"
+        if "PHASE: REFLECT" in prompt:
+            candidates.write_text(
+                "# Backlog Candidates\\n\\n- [ ] Build entire auth system end-to-end\\n",
+                encoding="utf-8",
+            )
+            msg = "DONE: added 1 coarse candidate"
+        elif "PHASE: PLAN" in prompt:
+            backlog.write_text(
+                "# Backlog\\n\\n"
+                "- [ ] Add User model and migration\\n"
+                "- [ ] Add login endpoint with tests\\n"
+                "- [ ] Add logout endpoint with tests\\n",
+                encoding="utf-8",
+            )
+            candidates.write_text("# Backlog Candidates\\n\\n", encoding="utf-8")
+            msg = "DONE: 3 ready tasks, first is User model"
+        else:
+            msg = "DONE: noop"
+        print(json.dumps({{"type": "text", "part": {{"type": "text", "text": msg}}}}))
+        print(json.dumps({{"type": "step_finish", "part": {{"reason": "stop", "tokens": {{"total": 10}}}}}}))
+    """))
+    phase_agent.chmod(0o755)
+    monkeypatch.setattr(settings, "agent_command", f"{phase_agent} {{prompt}}")
+
+    c = controller_with_tmp_repo
+    (tmp_target_repo / "backlog.md").write_text("# Backlog\n")
+    transcript.clear()
+
+    await c._run_cycle()
+
+    snap = transcript.snapshot()
+    starts = [e for e in snap if e.kind == "session_start"]
+    assert [e.task for e in starts] == ["reflect", "plan"]
+
+    pending = [t for t in parse_tasks(artifacts.read_backlog()) if t.status == "todo"]
+    assert len(pending) == 3
+    assert "User model" in pending[0].text
+    assert parse_tasks(artifacts.read_candidates()) == []
+    assert c.state.phase == "idle"
+
+
+@pytest.mark.asyncio
+async def test_execute_only_one_backlog_task_per_cycle(
+    controller_with_tmp_repo, tmp_target_repo, mock_agent_script, monkeypatch,
+):
+    """With multiple pending items, each cycle executes exactly one."""
+    from src import transcript
+
+    monkeypatch.setattr(settings, "agent_command", f"{mock_agent_script} {{prompt}}")
+    monkeypatch.setenv("AGENT_MODE", "ok")
+
+    c = controller_with_tmp_repo
+    (tmp_target_repo / "backlog.md").write_text(
+        "- [ ] first task\n- [ ] second task\n- [ ] third task\n"
+    )
+    transcript.clear()
+
+    await c._run_cycle()
+
+    starts = [e for e in transcript.snapshot() if e.kind == "session_start"]
+    assert len(starts) == 1
+    assert starts[0].task == "first task"
+
+
+@pytest.mark.asyncio
+async def test_relocate_stale_seed_skipped_by_executor(
+    controller_with_tmp_repo, tmp_target_repo, mock_agent_script, monkeypatch,
+):
+    """Legacy orchestrator seeds in backlog.md must not reach EXECUTE."""
+    from src import transcript
+    from src.orchestrator import artifacts
+
+    monkeypatch.setattr(settings, "agent_command", f"{mock_agent_script} {{prompt}}")
+    monkeypatch.setenv("AGENT_MODE", "ok")
+
+    c = controller_with_tmp_repo
+    (tmp_target_repo / "backlog.md").write_text(
+        "# Backlog\n\n"
+        "- [ ] (orchestrator seed, cycle 1) old seed line\n"
+        "- [ ] real executable task\n"
+    )
+    (tmp_target_repo / "backlog-candidates.md").write_text("# Backlog Candidates\n\n")
+    transcript.clear()
+
+    await c._run_cycle()
+
+    starts = [e for e in transcript.snapshot() if e.kind == "session_start"]
+    assert len(starts) == 1
+    assert starts[0].task == "real executable task"
+    from src.state_reader import parse_tasks
+    seeds = [
+        t.text for t in parse_tasks(artifacts.read_candidates()) if t.status == "todo"
+    ]
+    assert len(seeds) == 1
+    assert "orchestrator seed" in seeds[0]
 
 
 @pytest.mark.asyncio

@@ -35,26 +35,37 @@ work to do next?
   weak tests, and clear improvements.
 
 IMPORTANT: Check directives.md for any `status: pending` entries. If there are
-any, add them to the top of backlog.md as the highest-priority tasks (the human
+any, add them to the top of backlog.md as ready one-session tasks (the human
 queued them mid-loop to steer you). Mark their status to `acknowledged` once
 you've queued them.
 
-Append each candidate as a new `- [ ]` line in backlog.md. Each task must be
-small (~one session) and independently completable. Don't duplicate items
-already in backlog.md.
+Append each coarse opportunity as a new `- [ ]` line in backlog-candidates.md
+(not backlog.md — that file is the executor queue). Prefer several themes when
+you see them. Don't duplicate items already in backlog-candidates.md.
 
-End with: DONE: <how many tasks you added and the themes>"""
+End with: DONE: <how many candidates you added and the themes>"""
 
 
-def plan_prompt(cycle: int) -> str:
-    return f"""{ORIENT}
+def plan_prompt(cycle: int, memory_brief: str = "") -> str:
+    memory = f"\n\n{memory_brief}\n" if memory_brief else ""
+    return f"""{ORIENT}{memory}
 
-PHASE: PLAN (cycle {cycle}). Read backlog.md and order/refine the unchecked
-(`- [ ]`) items so the next step toward GOAL.md is first. Ensure each has a
-clear acceptance criterion; add one if missing. Don't check items off, and
-don't delete items — move obsolete ones to a `## Archived` section at the bottom.
+PHASE: PLAN (cycle {cycle}). Read backlog-candidates.md and decompose every
+unchecked (`- [ ]`) theme into ready one-session tasks in backlog.md.
 
-End with: DONE: <the task ordering, one line>"""
+1. **Decompose**: for each candidate theme, add multiple smaller `- [ ]` tasks to
+   backlog.md. Each must be completable in one session with a testable outcome.
+2. **Order**: put the highest-value next step toward GOAL.md first in backlog.md.
+3. **Refine**: each backlog.md task needs a clear acceptance criterion (on the
+   line or as a sub-bullet).
+4. **Clear candidates**: when done, remove all processed lines from
+   backlog-candidates.md (move to `## Archived` there if you want a trace). Leave
+   backlog-candidates.md empty when finished — the executor never reads it.
+
+Aim for **3–8** new tasks in backlog.md when the input allows. Don't check
+backlog.md items off. Don't delete without archiving.
+
+End with: DONE: <count of backlog.md tasks added and which one is first>"""
 
 
 def execute_prompt(cycle: int, task_text: str, memory_brief: str = "") -> str:
