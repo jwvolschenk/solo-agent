@@ -70,8 +70,12 @@ already done), edit its line in backlog.md from `- [ ]` to `- [x]`. This is
 REQUIRED — it's how the orchestrator tracks progress. If the task turns out
 to be blocked or invalid, leave it as `- [ ]` and say so in your summary.
 
-Since the orchestrator may not run a verify gate, run the project's own
-build/test/lint yourself before stopping to confirm your work is correct.
+**Leave the project working — non-negotiable.** Before you stop, the project
+must build/compile and its existing tests must pass. Detect and run whatever
+build/test/lint tooling this project actually uses (there may be no
+orchestrator verify gate — then you own this check). If you can't get there,
+revert your change rather than leave the tree broken. The next cycle starts
+from whatever state you leave behind.
 
 End with: DONE: <one-line summary of what you changed or why you stopped>"""
 

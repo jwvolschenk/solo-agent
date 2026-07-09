@@ -95,8 +95,13 @@ Since your session is wiped each time, your only memory is these files:
 4. **Directives are priority.** Address pending directives before other backlog work.
 5. **Stay in scope.** EXECUTE does ONE task. Don't refactor unrelated code.
 6. **Never touch `main` / run git unless told.** The orchestrator manages git.
-7. **Verify your own work.** If there's no orchestrator gate, run the project's
-   build/test/lint yourself before stopping. Don't claim success you didn't check.
+7. **Leave it working — non-negotiable.** End every session with the project in
+   a known-good state: it must build/compile and its existing tests must pass.
+   Detect and run whatever build/test/lint tooling this project actually uses
+   (there may be no orchestrator verify gate — then you own this check). If you
+   can't get there, revert your own change rather than leave the tree broken,
+   and say so in your DONE: summary. The next cycle assumes it's starting from
+   a working system.
 8. **Be honest.** If a task is blocked, invalid, or you can't complete it — say so
    clearly in your final message. Don't pretend success.
 9. **Reverts can happen.** If an orchestrator gate fails, your work may be reverted.
@@ -193,6 +198,43 @@ def ensure_artifacts() -> None:
 def read_backlog() -> str:
     p = backlog_path()
     return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
+
+
+# Rotating, project-agnostic categories for the orchestrator-injected fallback
+# task (see append_fallback_task). Generic on purpose: the orchestrator has no
+# idea what kind of project it's driving, so these must apply to anything.
+_FALLBACK_CATEGORIES = [
+    "performance and efficiency — profile or reason about hot paths and optimize one",
+    "code quality and tech debt — refactor a messy/overgrown area for clarity",
+    "test coverage — find an undertested area and add meaningful tests",
+    "documentation — improve docs, comments, or onboarding material where it's weakest",
+    "security and hardening — look for and fix a weak input-handling or trust boundary",
+    "error handling and resilience — find a fragile path and make it fail gracefully",
+    "dependency and tooling freshness — check for stale/vulnerable dependencies",
+    "developer experience — improve tooling, scripts, or setup friction",
+]
+
+
+def append_fallback_task(cycle: int) -> str:
+    """Append one orchestrator-authored, project-agnostic backlog task.
+
+    Called when the REFLECT phase comes back with zero new tasks — rather than
+    pausing the loop and waiting for a human, the orchestrator directs the
+    agent itself so the 24/7 loop keeps moving. The category rotates
+    deterministically by cycle number (no randomness) so repeated empty
+    reflects don't just repeat the same nudge. Returns the appended task text.
+    """
+    category = _FALLBACK_CATEGORIES[cycle % len(_FALLBACK_CATEGORIES)]
+    task = (
+        f"- [ ] (orchestrator-injected, cycle {cycle}) Reflect found no new work — "
+        f"survey the project for a {category} improvement, and implement one "
+        f"concrete, high-value change."
+    )
+    content = read_backlog()
+    sep = "\n" if content and not content.endswith("\n") else ""
+    backlog_path().write_text(content + sep + task + "\n", encoding="utf-8")
+    log.info("[cycle %d] injected fallback backlog task: %s", cycle, category)
+    return task
 
 
 def history_dir() -> Path:

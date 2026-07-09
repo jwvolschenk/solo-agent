@@ -400,27 +400,34 @@ class OrchestratorController:
                 await self._maybe_pause_on_stall(cycle)
                 return
 
-            # check if reflect added new tasks
+            # check if reflect added new tasks. If not, the orchestrator directs
+            # the agent itself — inject a generic, project-agnostic improvement
+            # task rather than pausing the loop and waiting for a human. This is
+            # what keeps a 24/7 loop 24/7: the human-facing pause is reserved for
+            # the stall/failure guardrails below, not "couldn't think of anything".
             backlog_tasks = parse_tasks(artifacts.read_backlog())
             new_pending = [t for t in backlog_tasks if t.status == "todo"]
+            fallback_task: Optional[str] = None
             if not new_pending:
-                log.info("[cycle %d] reflect produced no new tasks; pausing", cycle)
-                await self._record_cycle(
-                    cycle, outcome="paused", error="reflect produced no new tasks",
-                    summary="agent couldn't find more work to do", sha=snap,
-                )
-                self.state.running = False
-                self.state.phase = "paused"
-                self._persist()
-                return
+                fallback_task = artifacts.append_fallback_task(cycle)
+                log.info("[cycle %d] reflect produced no new tasks; orchestrator injected a fallback", cycle)
+                backlog_tasks = parse_tasks(artifacts.read_backlog())
+                new_pending = [t for t in backlog_tasks if t.status == "todo"]
 
             head = await snapshot()
             lines = await diff_stat(snap) if snap else 0
             outcome = "passed"
-            reflection_text = (
-                f"Archived {archived} completed items, then reflected: "
-                f"{len(new_pending)} new task(s) added. {reflect.final_message[:200]}"
-            )
+            if fallback_task:
+                reflection_text = (
+                    f"Archived {archived} completed items. Reflect found no new work, so "
+                    f"the orchestrator injected a fallback improvement task to keep the "
+                    f"loop moving: {fallback_task}"
+                )
+            else:
+                reflection_text = (
+                    f"Archived {archived} completed items, then reflected: "
+                    f"{len(new_pending)} new task(s) added. {reflect.final_message[:200]}"
+                )
             artifacts.append_reflection(reflection_text, cycle=cycle, outcome=outcome, sha=head)
             await self._record_cycle(
                 cycle, outcome=outcome, sha=snap, head_sha=head, lines=lines,

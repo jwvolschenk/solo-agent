@@ -11,9 +11,8 @@
       fontFamily: { mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'] }
     }}}
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
-    body { background: #0a0a0f; }
+    html, body { background: #0a0a0f; height: 100%; overflow: hidden; }
     .card { background: #13131a; border: 1px solid #23232e; }
     .pulse-dot { animation: pulse 2s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
@@ -49,169 +48,174 @@
     .phase-connector { background: #2a2a36; transition: background 0.3s ease; }
     .phase-connector.done { background: #22c55e; }
     .phase-connector.active { background: #6366f1; }
+
+    /* Dockable sidebars: drag handles + collapse rails */
+    .dock-panel { transition: width 0.15s ease; position: relative; }
+    .dock-handle {
+      position: absolute; top: 0; bottom: 0; width: 6px;
+      cursor: col-resize; z-index: 10; background: transparent;
+    }
+    .dock-handle:hover, .dock-handle.dragging { background: #6366f1aa; }
+    .dock-left .dock-handle { right: -3px; }
+    .dock-right .dock-handle { left: -3px; }
+    .dock-rail {
+      width: 28px; display: flex; flex-direction: column; align-items: center;
+      padding-top: 8px; gap: 8px; cursor: pointer;
+    }
+    .dock-rail-label {
+      writing-mode: vertical-rl; text-orientation: mixed; font-size: 10px;
+      letter-spacing: 0.05em; color: #6b7280; text-transform: uppercase;
+    }
   </style>
 </head>
-<body class="text-gray-200 min-h-screen font-sans">
-<div class="flex min-h-screen">
+<body class="text-gray-200 font-sans h-full">
+<div class="flex h-full">
 
-  <!-- Project sidebar -->
-  <aside class="w-52 shrink-0 card border-r border-[#23232e] p-3 space-y-2 min-h-screen">
-    <div class="flex items-center justify-between mb-1">
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Projects</h2>
-      <button id="btnNewProject" class="text-xs px-1.5 py-0.5 rounded bg-brand-600 hover:bg-brand-500 text-white font-bold leading-none">+</button>
-    </div>
-    <div id="projectList" class="space-y-1"></div>
-    <!-- new project form (hidden by default) -->
-    <div id="newProjectForm" class="hidden space-y-2 pt-2 border-t border-[#23232e] mt-2">
-      <input id="newProjName" placeholder="Name" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500" />
-      <input id="newProjPath" placeholder="/path/to/folder" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 mono" />
-      <textarea id="newProjGoal" rows="2" placeholder="Goal…" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-none"></textarea>
-      <div class="flex gap-2">
-        <button id="btnCreateProject" class="flex-1 px-2 py-1 text-xs rounded bg-green-600 hover:bg-green-500 text-white font-medium">Create</button>
-        <button id="btnCancelProject" class="px-2 py-1 text-xs rounded bg-[#2a2a36] hover:bg-[#363645] text-gray-400">Cancel</button>
+  <!-- Left dock: Projects + Server -->
+  <aside id="leftDock" class="dock-panel dock-left shrink-0 card border-r border-[#23232e] flex flex-col h-full" style="width:260px;">
+    <div id="leftDockContent" class="flex-1 flex flex-col min-h-0 p-3 gap-3 overflow-y-auto">
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Projects</h2>
+          <div class="flex items-center gap-1">
+            <button id="btnNewProject" class="text-xs px-1.5 py-0.5 rounded bg-brand-600 hover:bg-brand-500 text-white font-bold leading-none">+</button>
+            <button id="btnCollapseLeft" title="Collapse" class="text-xs px-1 py-0.5 rounded text-gray-500 hover:text-gray-300 hover:bg-[#1a1a22] leading-none">«</button>
+          </div>
+        </div>
+        <div id="projectList" class="space-y-1"></div>
+        <!-- new project form (hidden by default) -->
+        <div id="newProjectForm" class="hidden space-y-2 pt-2 border-t border-[#23232e] mt-2">
+          <input id="newProjName" placeholder="Name" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500" />
+          <input id="newProjPath" placeholder="/path/to/folder" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 mono" />
+          <textarea id="newProjGoal" rows="2" placeholder="Goal…" class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-none"></textarea>
+          <div class="flex gap-2">
+            <button id="btnCreateProject" class="flex-1 px-2 py-1 text-xs rounded bg-green-600 hover:bg-green-500 text-white font-medium">Create</button>
+            <button id="btnCancelProject" class="px-2 py-1 text-xs rounded bg-[#2a2a36] hover:bg-[#363645] text-gray-400">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="border-t border-[#23232e]"></div>
+
+      <!-- Server info (relocated from top grid) -->
+      <div>
+        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Server</h2>
+        <dl class="text-sm space-y-1.5">
+          <div class="flex justify-between"><dt class="text-gray-500">Uptime</dt><dd id="uptime" class="mono">—</dd></div>
+          <div class="flex justify-between"><dt class="text-gray-500">Context</dt><dd id="ctxSize" class="mono">—</dd></div>
+          <div class="flex justify-between"><dt class="text-gray-500">Slots</dt><dd id="slotsInfo" class="mono">—</dd></div>
+          <div class="flex justify-between"><dt class="text-gray-500">Queue</dt><dd id="queueInfo" class="mono">—</dd></div>
+          <div class="flex justify-between"><dt class="text-gray-500">Tokens</dt><dd id="totalTokens" class="mono">—</dd></div>
+        </dl>
+        <div class="pt-2 mt-2 border-t border-[#23232e]">
+          <div class="flex justify-between text-xs text-gray-500 mb-1">
+            <span>Context usage</span><span id="ctxPct" class="mono">—</span>
+          </div>
+          <div class="h-2 bg-[#23232e] rounded-full overflow-hidden">
+            <div id="ctxBar" class="h-full bg-brand-500 transition-all" style="width:0%"></div>
+          </div>
+        </div>
       </div>
     </div>
+    <div class="dock-handle" data-dock="left"></div>
   </aside>
 
+  <!-- Collapsed-left rail (hidden unless leftDock is collapsed) -->
+  <div id="leftRail" class="dock-rail hidden card border-r border-[#23232e] h-full">
+    <button id="btnExpandLeft" title="Expand" class="text-gray-500 hover:text-gray-300 text-xs">»</button>
+    <span class="dock-rail-label">Projects · Server</span>
+  </div>
+
   <!-- Main content -->
-  <div id="app" class="flex-1 max-w-[1500px] mx-auto p-4 space-y-4">
+  <div id="app" class="flex-1 flex flex-col min-w-0 h-full p-4 gap-3 overflow-hidden">
 
   <!-- Header -->
-  <header class="flex items-center justify-between">
+  <header class="flex items-center justify-between shrink-0">
     <div class="flex items-center gap-3">
       <h1 class="text-xl font-bold tracking-tight">SOLO AGENT MONITOR</h1>
       <span id="modelBadge" class="text-xs text-gray-500 mono"></span>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-3">
+      <span id="wsStatus" class="text-xs text-gray-600">disconnected</span>
       <span id="healthDot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
       <span id="healthText" class="text-sm font-medium">connecting…</span>
     </div>
   </header>
 
-  <!-- Top grid: perf + context/server + current task -->
-  <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+  <!-- Orchestrator (phase, goal, directives, controls) -->
+  <section class="card rounded-lg p-4 space-y-3 shrink-0">
+    <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Orchestrator</h2>
 
-    <!-- Performance charts -->
-    <section class="card rounded-lg p-3 lg:col-span-5 space-y-2">
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Performance</h2>
-      <div>
-        <div class="flex justify-between text-xs text-gray-500 mb-0.5">
-          <span>Prefill t/s</span><span id="prefillVal" class="mono text-gray-300">—</span>
-        </div>
-        <div class="h-12"><canvas id="prefillChart"></canvas></div>
+    <!-- Phase timeline: 5 stages in a horizontal track, active one lights up -->
+    <div id="phaseTimeline" class="flex items-center gap-0 select-none">
+      <div class="flex-1 text-center">
+        <div class="phase-node mx-auto mb-1" data-phase="reflect"></div>
+        <div class="text-[10px] uppercase tracking-wide text-gray-500">Reflect</div>
       </div>
-      <div>
-        <div class="flex justify-between text-xs text-gray-500 mb-0.5">
-          <span>Decode t/s</span><span id="decodeVal" class="mono text-gray-300">—</span>
-        </div>
-        <div class="h-12"><canvas id="decodeChart"></canvas></div>
+      <div class="phase-connector flex-1 h-0.5 -mt-4"></div>
+      <div class="flex-1 text-center">
+        <div class="phase-node mx-auto mb-1" data-phase="plan"></div>
+        <div class="text-[10px] uppercase tracking-wide text-gray-500">Plan</div>
       </div>
-    </section>
-
-    <!-- Server info -->
-    <section class="card rounded-lg p-4 lg:col-span-3 space-y-2">
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Server</h2>
-      <dl class="text-sm space-y-1.5">
-        <div class="flex justify-between"><dt class="text-gray-500">Uptime</dt><dd id="uptime" class="mono">—</dd></div>
-        <div class="flex justify-between"><dt class="text-gray-500">Context</dt><dd id="ctxSize" class="mono">—</dd></div>
-        <div class="flex justify-between"><dt class="text-gray-500">Slots</dt><dd id="slotsInfo" class="mono">—</dd></div>
-        <div class="flex justify-between"><dt class="text-gray-500">Queue</dt><dd id="queueInfo" class="mono">—</dd></div>
-        <div class="flex justify-between"><dt class="text-gray-500">Tokens</dt><dd id="totalTokens" class="mono">—</dd></div>
-      </dl>
-      <div class="pt-2 mt-2 border-t border-[#23232e]">
-        <div class="flex justify-between text-xs text-gray-500 mb-1">
-          <span>Context usage</span><span id="ctxPct" class="mono">—</span>
-        </div>
-        <div class="h-2 bg-[#23232e] rounded-full overflow-hidden">
-          <div id="ctxBar" class="h-full bg-brand-500 transition-all" style="width:0%"></div>
-        </div>
+      <div class="phase-connector flex-1 h-0.5 -mt-4"></div>
+      <div class="flex-1 text-center">
+        <div class="phase-node mx-auto mb-1" data-phase="execute"></div>
+        <div class="text-[10px] uppercase tracking-wide text-gray-500">Execute</div>
       </div>
-    </section>
+      <div class="phase-connector flex-1 h-0.5 -mt-4"></div>
+      <div class="flex-1 text-center">
+        <div class="phase-node mx-auto mb-1" data-phase="verify"></div>
+        <div class="text-[10px] uppercase tracking-wide text-gray-500">Verify</div>
+      </div>
+      <div class="phase-connector flex-1 h-0.5 -mt-4"></div>
+      <div class="flex-1 text-center">
+        <div class="phase-node mx-auto mb-1" data-phase="record"></div>
+        <div class="text-[10px] uppercase tracking-wide text-gray-500">Record</div>
+      </div>
+    </div>
 
-    <!-- Current task + orchestrator -->
-    <section class="card rounded-lg p-4 lg:col-span-4 space-y-3">
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Orchestrator</h2>
+    <div class="flex items-center justify-between">
+      <span id="orchPhaseLabel" class="text-xs mono text-gray-400">idle</span>
+      <span id="orchCycleLabel" class="text-xs mono text-gray-500">cycle 0</span>
+    </div>
 
-      <!-- Phase timeline: 5 stages in a horizontal track, active one lights up -->
-      <div id="phaseTimeline" class="flex items-center gap-0 select-none">
-        <div class="flex-1 text-center">
-          <div class="phase-node mx-auto mb-1" data-phase="reflect"></div>
-          <div class="text-[10px] uppercase tracking-wide text-gray-500">Reflect</div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <!-- Left column: stats, goal, path, current task, controls -->
+      <div class="space-y-3">
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div><div id="orchCycle" class="text-lg font-bold mono">0</div><div class="text-[10px] text-gray-500 uppercase">cycle</div></div>
+          <div><div id="orchPassed" class="text-lg font-bold mono text-green-400">0</div><div class="text-[10px] text-gray-500 uppercase">passed</div></div>
+          <div><div id="orchTokens" class="text-lg font-bold mono">0</div><div class="text-[10px] text-gray-500 uppercase">tokens</div></div>
         </div>
-        <div class="phase-connector flex-1 h-0.5 -mt-4"></div>
-        <div class="flex-1 text-center">
-          <div class="phase-node mx-auto mb-1" data-phase="plan"></div>
-          <div class="text-[10px] uppercase tracking-wide text-gray-500">Plan</div>
+        <div>
+          <div class="text-xs text-gray-500 mb-1">Goal <span class="text-gray-600">(drives every cycle)</span></div>
+          <textarea id="goalText" rows="2" placeholder="e.g. Build a Tower Defense roguelite deckbuilder in Godot with themes: neon, synthwave..."
+            class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-none"></textarea>
         </div>
-        <div class="phase-connector flex-1 h-0.5 -mt-4"></div>
-        <div class="flex-1 text-center">
-          <div class="phase-node mx-auto mb-1" data-phase="execute"></div>
-          <div class="text-[10px] uppercase tracking-wide text-gray-500">Execute</div>
+        <div>
+          <div class="text-xs text-gray-500 mb-1">Project path <span class="text-gray-600">(OpenCode sandbox)</span></div>
+          <div class="flex gap-2">
+            <input id="projectPath" placeholder="/path/to/repo"
+              class="flex-1 text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 mono" />
+            <button id="btnSetPath" class="px-3 py-1 text-xs rounded bg-[#2a2a36] hover:bg-[#363645] text-gray-300 font-medium">Set</button>
+          </div>
         </div>
-        <div class="phase-connector flex-1 h-0.5 -mt-4"></div>
-        <div class="flex-1 text-center">
-          <div class="phase-node mx-auto mb-1" data-phase="verify"></div>
-          <div class="text-[10px] uppercase tracking-wide text-gray-500">Verify</div>
+        <div>
+          <div class="text-xs text-gray-500 mb-1">Current task</div>
+          <div id="currentTask" class="text-sm text-gray-300 min-h-[2.5rem]">—</div>
         </div>
-        <div class="phase-connector flex-1 h-0.5 -mt-4"></div>
-        <div class="flex-1 text-center">
-          <div class="phase-node mx-auto mb-1" data-phase="record"></div>
-          <div class="text-[10px] uppercase tracking-wide text-gray-500">Record</div>
+        <div class="flex gap-2 pt-1">
+          <button id="btnStart" class="flex-1 px-3 py-1.5 text-xs rounded bg-green-600 hover:bg-green-500 text-white font-medium">Start</button>
+          <button id="btnPause" class="flex-1 px-3 py-1.5 text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white font-medium">Pause</button>
+          <button id="btnStop" class="flex-1 px-3 py-1.5 text-xs rounded bg-red-600 hover:bg-red-500 text-white font-medium">Stop</button>
         </div>
+        <button id="btnStopAfterCycle" class="w-full px-3 py-1.5 text-xs rounded bg-[#2a2a36] hover:bg-amber-900 text-gray-400 hover:text-amber-300 font-medium border border-[#363645]">Stop after this cycle</button>
+        <div id="orchError" class="text-xs text-red-400 hidden"></div>
       </div>
 
-      <div class="flex items-center justify-between">
-        <span id="orchPhaseLabel" class="text-xs mono text-gray-400">idle</span>
-        <span id="orchCycleLabel" class="text-xs mono text-gray-500">cycle 0</span>
-      </div>
-      <div class="grid grid-cols-3 gap-2 text-center">
-        <div><div id="orchCycle" class="text-lg font-bold mono">0</div><div class="text-[10px] text-gray-500 uppercase">cycle</div></div>
-        <div><div id="orchPassed" class="text-lg font-bold mono text-green-400">0</div><div class="text-[10px] text-gray-500 uppercase">passed</div></div>
-        <div><div id="orchTokens" class="text-lg font-bold mono">0</div><div class="text-[10px] text-gray-500 uppercase">tokens</div></div>
-      </div>
-      <div>
-        <div class="text-xs text-gray-500 mb-1">Goal <span class="text-gray-600">(drives every cycle)</span></div>
-        <textarea id="goalText" rows="2" placeholder="e.g. Build a Tower Defense roguelite deckbuilder in Godot with themes: neon, synthwave..."
-          class="w-full text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 resize-none"></textarea>
-      </div>
-      <div>
-        <div class="text-xs text-gray-500 mb-1">Project path <span class="text-gray-600">(OpenCode sandbox)</span></div>
-        <div class="flex gap-2">
-          <input id="projectPath" placeholder="/path/to/repo"
-            class="flex-1 text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500 mono" />
-          <button id="btnSetPath" class="px-3 py-1 text-xs rounded bg-[#2a2a36] hover:bg-[#363645] text-gray-300 font-medium">Set</button>
-        </div>
-      </div>
-      <div>
-        <div class="text-xs text-gray-500 mb-1">Current task</div>
-        <div id="currentTask" class="text-sm text-gray-300 min-h-[2.5rem]">—</div>
-      </div>
-      <div class="flex gap-2 pt-1">
-        <button id="btnStart" class="flex-1 px-3 py-1.5 text-xs rounded bg-green-600 hover:bg-green-500 text-white font-medium">Start</button>
-        <button id="btnPause" class="flex-1 px-3 py-1.5 text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white font-medium">Pause</button>
-        <button id="btnStop" class="flex-1 px-3 py-1.5 text-xs rounded bg-red-600 hover:bg-red-500 text-white font-medium">Stop</button>
-      </div>
-      <button id="btnStopAfterCycle" class="w-full px-3 py-1.5 text-xs rounded bg-[#2a2a36] hover:bg-amber-900 text-gray-400 hover:text-amber-300 font-medium border border-[#363645]">Stop after this cycle</button>
-      <div id="orchError" class="text-xs text-red-400 hidden"></div>
-    </section>
-  </div>
-
-  <!-- Lower grid: activity (wide) + backlog/directives -->
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-    <!-- Activity feed (spans 2 columns — the main attraction) -->
-    <section class="card rounded-lg p-4 lg:col-span-2 flex flex-col">
-      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Recent Activity</h2>
-      <div id="activityFeed" class="space-y-0.5 text-xs overflow-y-auto flex-1" style="max-height: calc(100vh - 280px); min-height: 400px;">
-        <div class="text-gray-600">no activity yet</div>
-      </div>
-    </section>
-
-    <!-- Backlog + Directives + Reflections (combined sidebar) -->
-    <section class="card rounded-lg p-4 space-y-3">
-      <!-- Directives (steering) -->
-      <div>
-        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Directives</h2>
+      <!-- Right column: Directives (relocated from the old right sidebar) -->
+      <div class="flex flex-col min-h-0">
+        <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Directives <span class="text-gray-600 normal-case">(steer the loop)</span></h3>
         <div class="flex gap-1.5 mb-2">
           <select id="dirPriority" class="text-xs bg-[#1a1a22] border border-[#23232e] rounded px-1.5 py-1">
             <option value="normal">normal</option>
@@ -222,39 +226,27 @@
             class="flex-1 text-xs bg-[#1a1a22] border border-[#23232e] rounded px-2 py-1 placeholder-gray-600 focus:outline-none focus:border-brand-500" />
           <button id="dirSend" class="px-2 py-1 text-xs rounded bg-brand-600 hover:bg-brand-500 text-white font-medium">Send</button>
         </div>
-        <div id="directiveList" class="space-y-1.5 max-h-32 overflow-y-auto">
+        <div id="directiveList" class="space-y-1.5 overflow-y-auto flex-1" style="max-height: 220px;">
           <div class="text-gray-600 text-xs">no directives queued</div>
         </div>
       </div>
+    </div>
+  </section>
 
-      <div class="border-t border-[#23232e]"></div>
+  <!-- Activity feed — the main attraction, fills remaining vertical space -->
+  <section class="card rounded-lg p-4 flex flex-col flex-1 min-h-0">
+    <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 shrink-0">Recent Activity</h2>
+    <div id="activityFeed" class="space-y-1 text-sm overflow-y-auto flex-1 min-h-0">
+      <div class="text-gray-600">no activity yet</div>
+    </div>
+  </section>
 
-      <!-- Backlog (the agent's plan) -->
-      <div>
-        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Backlog <span class="text-gray-600 normal-case">(plan)</span></h2>
-        <div id="backlogList" class="space-y-1 text-xs max-h-40 overflow-y-auto">
-          <div class="text-gray-600">no backlog yet</div>
-        </div>
-      </div>
-
-      <div class="border-t border-[#23232e]"></div>
-
-      <!-- Reflections (memory) -->
-      <div>
-        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Reflections <span class="text-gray-600 normal-case">(memory)</span></h2>
-        <div id="reflectionsList" class="space-y-1.5 text-xs max-h-32 overflow-y-auto">
-          <div class="text-gray-600">no reflections yet</div>
-        </div>
-      </div>
-    </section>
-  </div>
-
-  <!-- Cycle history -->
-  <section class="card rounded-lg p-4">
+  <!-- Cycle history — fixed height, own scroll, doesn't grow the page -->
+  <section class="card rounded-lg p-4 shrink-0" style="max-height: 220px;">
     <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Cycle History</h2>
-    <div class="overflow-x-auto">
+    <div class="overflow-auto" style="max-height: 160px;">
       <table class="w-full text-xs">
-        <thead class="text-gray-500 border-b border-[#23232e]">
+        <thead class="text-gray-500 border-b border-[#23232e] sticky top-0 bg-[#13131a]">
           <tr>
             <th class="text-left py-1.5 px-2">#</th>
             <th class="text-left py-1.5 px-2">Outcome</th>
@@ -271,12 +263,44 @@
       </table>
     </div>
   </section>
-
-  <footer class="text-center text-xs text-gray-600 py-2">
-    Solo Agent v0.1 · <span id="wsStatus">disconnected</span>
-  </footer>
   </div><!-- /#app -->
-</div><!-- /.flex (sidebar + main) -->
+
+  <!-- Collapsed-right rail (hidden unless rightDock is collapsed) -->
+  <div id="rightRail" class="dock-rail hidden card border-l border-[#23232e] h-full">
+    <button id="btnExpandRight" title="Expand" class="text-gray-500 hover:text-gray-300 text-xs">«</button>
+    <span class="dock-rail-label">Backlog · Reflections</span>
+  </div>
+
+  <!-- Right dock: Backlog + Reflections -->
+  <aside id="rightDock" class="dock-panel dock-right shrink-0 card border-l border-[#23232e] flex flex-col h-full" style="width:320px;">
+    <div class="dock-handle" data-dock="right"></div>
+    <div id="rightDockContent" class="flex-1 flex flex-col min-h-0 p-3 gap-3 overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <span></span>
+        <button id="btnCollapseRight" title="Collapse" class="text-xs px-1 py-0.5 rounded text-gray-500 hover:text-gray-300 hover:bg-[#1a1a22] leading-none">»</button>
+      </div>
+
+      <!-- Backlog (the agent's plan) -->
+      <div>
+        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Backlog <span class="text-gray-600 normal-case">(plan)</span></h2>
+        <div id="backlogList" class="space-y-1 text-xs max-h-64 overflow-y-auto">
+          <div class="text-gray-600">no backlog yet</div>
+        </div>
+      </div>
+
+      <div class="border-t border-[#23232e]"></div>
+
+      <!-- Reflections (memory) -->
+      <div class="flex-1 min-h-0 flex flex-col">
+        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Reflections <span class="text-gray-600 normal-case">(memory)</span></h2>
+        <div id="reflectionsList" class="space-y-1.5 text-xs overflow-y-auto flex-1">
+          <div class="text-gray-600">no reflections yet</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+</div><!-- /.flex (docks + main) -->
 
 <script>
 // ============================================================================
@@ -287,31 +311,66 @@ const fmt = (n) => n == null ? '—' : (typeof n === 'number' ? n.toLocaleString
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ============================================================================
-// Charts (Chart.js sparklines, 60-point rolling windows)
+// Dockable sidebars: resize (drag handle) + collapse (rail), persisted layout
 // ============================================================================
-function makeSparkline(ctx, color) {
-  return new Chart(ctx, {
-    type: 'line',
-    data: { labels: [], datasets: [{ data: [], borderColor: color, backgroundColor: color+'22', borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: true }] },
-    options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
-      plugins: { legend: { display: false }, tooltip: { enabled: false } },
-      scales: { x: { display: false }, y: { display: false } },
-    }
+const DOCK_MIN = 180, DOCK_MAX = 480;
+const DOCK_DEFAULTS = { leftWidth: 260, rightWidth: 320, leftCollapsed: false, rightCollapsed: false };
+
+function loadDockLayout() {
+  try {
+    const raw = localStorage.getItem('solo.layout');
+    if (!raw) return { ...DOCK_DEFAULTS };
+    return { ...DOCK_DEFAULTS, ...JSON.parse(raw) };
+  } catch (e) { return { ...DOCK_DEFAULTS }; }
+}
+function saveDockLayout(layout) {
+  try { localStorage.setItem('solo.layout', JSON.stringify(layout)); } catch (e) { /* ignore */ }
+}
+
+let _dockLayout = loadDockLayout();
+
+function applyDockLayout() {
+  $('leftDock').style.width = _dockLayout.leftWidth + 'px';
+  $('rightDock').style.width = _dockLayout.rightWidth + 'px';
+  $('leftDock').classList.toggle('hidden', _dockLayout.leftCollapsed);
+  $('leftRail').classList.toggle('hidden', !_dockLayout.leftCollapsed);
+  $('rightDock').classList.toggle('hidden', _dockLayout.rightCollapsed);
+  $('rightRail').classList.toggle('hidden', !_dockLayout.rightCollapsed);
+}
+
+function initDockResize() {
+  document.querySelectorAll('.dock-handle').forEach(handle => {
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const side = handle.dataset.dock;
+      handle.classList.add('dragging');
+      const startX = e.clientX;
+      const startWidth = side === 'left' ? _dockLayout.leftWidth : _dockLayout.rightWidth;
+      const onMove = (me) => {
+        const delta = side === 'left' ? (me.clientX - startX) : (startX - me.clientX);
+        const next = Math.min(DOCK_MAX, Math.max(DOCK_MIN, startWidth + delta));
+        if (side === 'left') { _dockLayout.leftWidth = next; $('leftDock').style.width = next + 'px'; }
+        else { _dockLayout.rightWidth = next; $('rightDock').style.width = next + 'px'; }
+      };
+      const onUp = () => {
+        handle.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        saveDockLayout(_dockLayout);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
   });
 }
-const prefillChart = makeSparkline($('prefillChart').getContext('2d'), '#6366f1');
-const decodeChart  = makeSparkline($('decodeChart').getContext('2d'), '#22d3ee');
-const MAX_POINTS = 60;
-function pushPoint(chart, val) {
-  chart.data.labels.push('');
-  chart.data.datasets[0].data.push(val || 0);
-  if (chart.data.labels.length > MAX_POINTS) {
-    chart.data.labels.shift();
-    chart.data.datasets[0].data.shift();
-  }
-  chart.update('none');
-}
+
+$('btnCollapseLeft').onclick = () => { _dockLayout.leftCollapsed = true; applyDockLayout(); saveDockLayout(_dockLayout); };
+$('btnExpandLeft').onclick = () => { _dockLayout.leftCollapsed = false; applyDockLayout(); saveDockLayout(_dockLayout); };
+$('btnCollapseRight').onclick = () => { _dockLayout.rightCollapsed = true; applyDockLayout(); saveDockLayout(_dockLayout); };
+$('btnExpandRight').onclick = () => { _dockLayout.rightCollapsed = false; applyDockLayout(); saveDockLayout(_dockLayout); };
+
+applyDockLayout();
+initDockResize();
 
 // ============================================================================
 // WebSocket (primary) with REST polling fallback
@@ -398,11 +457,6 @@ function _updateCtxBar() {
 }
 
 function renderMetrics(m) {
-  const pre = m.prompt_tokens_seconds, dec = m.predicted_tokens_seconds;
-  $('prefillVal').textContent = pre != null ? pre.toFixed(1) : '—';
-  $('decodeVal').textContent = dec != null ? dec.toFixed(1) : '—';
-  pushPoint(prefillChart, pre);
-  pushPoint(decodeChart, dec);
   $('totalTokens').textContent = fmt((m.prompt_tokens_total || 0) + (m.tokens_predicted_total || 0));
   $('queueInfo').textContent = `${m.requests_processing ?? 0} proc / ${m.requests_deferred ?? 0} queue`;
   // context usage: n_tokens_max is the high-water mark of tokens in context
@@ -507,7 +561,7 @@ function handleTranscriptBackfill(events) {
   _transcriptOrder.length = 0;
   _transcriptSessions.clear();
   events.forEach(_ingestTranscriptEvent);
-  renderTranscript();
+  renderTranscript({ forceScrollBottom: true });
 }
 
 function handleTranscriptEvent(event) {
@@ -546,22 +600,43 @@ function _renderTranscriptEntry(e) {
   const badge = e.status === 'running' ? '<span class="pulse-dot text-yellow-400">●</span>'
     : e.status === 'error' ? '<span class="text-red-400">✗</span>'
     : '<span class="text-green-400">✓</span>';
-  const header = `<div class="flex items-center gap-2 text-gray-300"><span class="mono text-purple-400">${esc(e.tool || 'tool')}</span> ${badge} <span class="mono text-[11px] text-gray-500 break-all">${esc(e.title || e.input || '')}</span></div>`;
+  const header = `<div class="flex items-center gap-2 text-gray-300"><span class="mono text-purple-400">${esc(e.tool || 'tool')}</span> ${badge} <span class="mono text-xs text-gray-500 break-all">${esc(e.title || e.input || '')}</span></div>`;
   if (e.readonly) {
     return `<div class="log-line tool pl-2 py-1">${header}</div>`;
   }
   const body = e.output
-    ? `<pre class="mono text-[11px] text-gray-400 bg-[#0d0d12] rounded p-2 mt-1 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">${_diffLines(e.output)}</pre>`
+    ? `<pre class="mono text-xs text-gray-400 bg-[#0d0d12] rounded p-2 mt-1 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">${_diffLines(e.output)}</pre>`
     : '';
   return `<div class="log-line ${e.status === 'error' ? 'error' : 'tool'} pl-2 py-1">${header}${body}</div>`;
 }
 
-function renderTranscript() {
+// Sticky auto-scroll: follow new activity only while already near the bottom.
+// Scrolling up to read history pauses it; scrolling back down resumes it.
+let _activityAutoScroll = true;
+const ACTIVITY_BOTTOM_THRESHOLD = 48;
+
+function _isNearActivityBottom() {
+  const el = $('activityFeed');
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= ACTIVITY_BOTTOM_THRESHOLD;
+}
+
+$('activityFeed').addEventListener('scroll', () => { _activityAutoScroll = _isNearActivityBottom(); });
+
+function _applyActivityHTML(html, { forceScrollBottom = false } = {}) {
+  const el = $('activityFeed');
+  const shouldStickToBottom = forceScrollBottom || _activityAutoScroll;
+  const savedScrollTop = el.scrollTop;
+  el.innerHTML = html;
+  el.scrollTop = shouldStickToBottom ? el.scrollHeight : savedScrollTop;
+  if (shouldStickToBottom) _activityAutoScroll = true;
+}
+
+function renderTranscript(opts) {
   const toolAndTextIds = _transcriptOrder.filter(id => {
     const e = _transcriptEntries.get(id);
     return e.kind === 'tool' || e.kind === 'text';
   });
-  if (!toolAndTextIds.length) { $('activityFeed').innerHTML = '<div class="text-gray-600">no activity yet</div>'; return; }
+  if (!toolAndTextIds.length) { _applyActivityHTML('<div class="text-gray-600">no activity yet</div>', opts); return; }
   // group consecutive entries by session_id into cards
   const cards = [];
   let current = null;
@@ -573,15 +648,16 @@ function renderTranscript() {
     }
     current.entries.push(e);
   }
-  $('activityFeed').innerHTML = cards.map(card => {
+  const html = cards.map(card => {
     const s = _transcriptSessions.get(card.sid) || {};
     const label = s.cycle != null ? `cycle ${esc(String(s.cycle))} · ${esc(s.task || '')}` : esc(card.sid);
     const statusCls = s.status === 'error' ? 'text-red-400' : s.status === 'running' ? 'text-yellow-400' : 'text-green-400';
     return `<div class="border border-[#23232e] rounded mb-2">
-      <div class="px-2 py-1 text-[11px] font-semibold ${statusCls} bg-[#15151d] rounded-t">${label}</div>
+      <div class="px-2 py-1 text-xs font-semibold ${statusCls} bg-[#15151d] rounded-t">${label}</div>
       <div class="p-1 space-y-0.5">${card.entries.map(_renderTranscriptEntry).join('')}</div>
     </div>`;
   }).join('');
+  _applyActivityHTML(html, opts);
 }
 
 // Track the last activity event id we've seen so we can animate new entries
@@ -599,16 +675,16 @@ function renderActivity(events) {
   const newIds = new Set(deduped.filter(e => (e.id || 0) > _lastActivityId).map(e => e.id));
   _lastActivityId = Math.max(_lastActivityId, ...deduped.map(e => e.id || 0));
 
-  const wasNearBottom = true; // always prepend new items at top (newest first)
-  $('activityFeed').innerHTML = deduped.map(e => {
+  const html = deduped.map(e => {
     const t = new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
     const isNew = newIds.has(e.id);
     const animClass = isNew ? 'activity-new' : '';
     return `<div class="log-line ${e.type} ${animClass} pl-2 py-1 flex items-start gap-2">
-      <span class="text-gray-600 mono text-[10px] shrink-0">${t}</span>
+      <span class="text-gray-600 mono text-xs shrink-0">${t}</span>
       <span class="text-gray-300 break-all">${esc(e.message)}</span>
     </div>`;
   }).join('');
+  _applyActivityHTML(html);
 }
 
 function renderDirectives(dirs) {

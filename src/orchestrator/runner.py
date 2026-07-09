@@ -73,8 +73,16 @@ def build_command(prompt: str, session_id: str, title: str) -> list[str]:
     Substitutions: {repo} {session} {title} {model} {prompt}.
     Only placeholders actually present in the template are substituted, so the
     default template (no {session}) works without error and a custom template
-    that includes {session} still gets it. The prompt is passed as one argv
-    element (shlex reconstructs the quoting).
+    that includes {session} still gets it.
+
+    The template is shlex-split FIRST, before any substitution — the template
+    itself is operator-authored (config, not agent output), so its own quoting
+    is well-formed. Substitution then happens per already-split argv element
+    via plain string replace, never a second shlex pass. This matters because
+    `prompt` is natural-language text (reflect/execute prompts routinely
+    contain apostrophes — "don't", "it's", "can't"); re-running shlex.split
+    over prompt content embedded in the template would corrupt argv boundaries
+    or raise "No closing quotation" on an odd quote count.
     """
     subs = {
         "repo": str(settings.project_path),
@@ -83,11 +91,13 @@ def build_command(prompt: str, session_id: str, title: str) -> list[str]:
         "model": settings.agent_model,
         "prompt": prompt,
     }
-    template = settings.agent_command
-    # Only substitute known placeholders so braces in the prompt can't break it.
-    for key, val in subs.items():
-        template = template.replace("{" + key + "}", val)
-    return shlex.split(template)
+
+    def substitute(arg: str) -> str:
+        for key, val in subs.items():
+            arg = arg.replace("{" + key + "}", val)
+        return arg
+
+    return [substitute(arg) for arg in shlex.split(settings.agent_command)]
 
 
 async def run_goal(

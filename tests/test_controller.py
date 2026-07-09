@@ -120,6 +120,39 @@ async def test_run_cycle_brackets_task_execution_with_transcript_session_markers
 
 
 @pytest.mark.asyncio
+async def test_reflect_empty_injects_fallback_task_instead_of_pausing(
+    controller_with_tmp_repo, tmp_target_repo, mock_agent_script, monkeypatch
+):
+    """When the backlog is empty and REFLECT finds no new work, the orchestrator
+    must keep the 24/7 loop moving by injecting a generic fallback task itself
+    rather than pausing and waiting for a human."""
+    from src.orchestrator import artifacts
+    from src.state_reader import parse_tasks
+
+    # the default "true {prompt}" stub emits no stdout, so run_goal treats it
+    # as a failed (non-"ok") session and the REFLECT branch never even reaches
+    # the "did reflect add new tasks?" check. Use the mock agent script in "ok"
+    # mode instead: it emits a real DONE: message (a genuine success), but
+    # writes nothing to backlog.md -- exactly "reflect succeeded, found nothing".
+    monkeypatch.setattr(settings, "agent_command", f"{mock_agent_script} {{prompt}}")
+    monkeypatch.setenv("AGENT_MODE", "ok")
+
+    c = controller_with_tmp_repo
+    # no pending tasks -> REFLECT path runs.
+    (tmp_target_repo / "backlog.md").write_text("# Backlog\n")
+    c.state.running = True  # simulate an active loop, as start() would set
+
+    await c._run_cycle()
+
+    assert c.state.phase == "idle"
+    assert c.state.running is True  # must NOT be force-stopped just because reflect found nothing
+    tasks = parse_tasks(artifacts.read_backlog())
+    pending = [t for t in tasks if t.status == "todo"]
+    assert len(pending) == 1
+    assert "orchestrator-injected" in pending[0].text
+
+
+@pytest.mark.asyncio
 async def test_switch_project_clears_transcript(controller_with_tmp_repo, tmp_path):
     from datetime import datetime
 
