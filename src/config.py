@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     )
     agent_model: str = "llamacpp/qwen3.6-reap"
 
+    # codedb MCP server command for project .opencode/opencode.json seeding.
+    # Default: auto-discover ``codedb`` on PATH. Override when the binary lives
+    # elsewhere, e.g. ``/home/you/.local/bin/codedb mcp``.
+    codedb_mcp_command: str = ""
+
     # Per-goal timeout. OpenCode can hang indefinitely (issue #4255); never wait forever.
     per_goal_timeout_sec: float = 1800.0  # 30 min hard cap per goal
     cycle_timeout_sec: float = 7200.0  # 2h hard cap per full cycle

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -257,20 +259,24 @@ def ensure_codedb_guide() -> None:
 
 
 def ensure_opencode_instructions() -> None:
-    """Ensure .opencode/opencode.json lists CODEDB.md in instructions.
+    """Ensure .opencode/opencode.json wires CODEDB.md + codedb MCP.
 
-    Merges into an existing config (preserves mcp, provider, etc.). Idempotent.
+    Merges into an existing config (preserves provider, permissions, etc.).
+    Seeds ``mcp.codedb`` only when missing — never overwrites a custom entry.
+    Idempotent.
     """
     config_path = opencode_config_path()
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            log.warning("could not parse %s; skipping instructions merge", config_path)
+            log.warning("could not parse %s; skipping opencode merge", config_path)
             return
     else:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         data = {"$schema": "https://opencode.ai/config.json"}
+
+    changed = False
 
     raw = data.get("instructions")
     if raw is None:
@@ -280,21 +286,57 @@ def ensure_opencode_instructions() -> None:
     elif isinstance(raw, list):
         instructions = [str(x) for x in raw]
     else:
-        log.warning("opencode.json instructions is not a list; skipping merge")
-        return
+        log.warning("opencode.json instructions is not a list; skipping instructions merge")
+        instructions = []
 
-    changed = False
     for name in _OPENCODE_INSTRUCTION_FILES:
         if name not in instructions:
             instructions.insert(0, name)
             changed = True
 
+    if changed or "instructions" not in data:
+        data["instructions"] = instructions
+
+    mcp = data.get("mcp")
+    if not isinstance(mcp, dict):
+        mcp = None
+
+    if mcp is None or "codedb" not in mcp:
+        cmd = _resolve_codedb_mcp_command()
+        if cmd is None:
+            log.warning(
+                "codedb binary not found (set CODEDB_MCP_COMMAND); "
+                "skipping mcp.codedb seed in %s",
+                config_path,
+            )
+        else:
+            if mcp is None:
+                mcp = {}
+            mcp["codedb"] = {"type": "local", "command": cmd}
+            data["mcp"] = mcp
+            changed = True
+
     if not changed:
         return
 
-    data["instructions"] = instructions
     config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    log.info("updated %s instructions: %s", config_path, instructions)
+    log.info(
+        "updated %s (instructions=%s, mcp.codedb=%s)",
+        config_path,
+        instructions,
+        isinstance(data.get("mcp"), dict) and "codedb" in data["mcp"],
+    )
+
+
+def _resolve_codedb_mcp_command() -> Optional[list[str]]:
+    """Argv for the codedb MCP server, or None if not discoverable."""
+    override = settings.codedb_mcp_command.strip()
+    if override:
+        return shlex.split(override)
+    binary = shutil.which("codedb")
+    if binary:
+        return [binary, "mcp"]
+    return None
 
 
 def ensure_artifacts() -> None:
