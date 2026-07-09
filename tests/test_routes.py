@@ -105,6 +105,43 @@ def test_state_tasks_endpoint(client, tmp_settings):
     assert len(data["tasks"]) == 2
 
 
+def test_state_reflections_endpoint(client, tmp_settings):
+    (tmp_settings.project_path / "reflections.md").write_text(
+        "## Cycle 2  2026-07-09T12:00:00Z  outcome:pending\n\nReflect phase: add tests.\n"
+    )
+    r = client.get("/api/state/reflections")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["exists"] is True
+    assert len(data["reflections"]) == 1
+    assert data["reflections"][0]["cycle"] == 2
+    assert data["reflections"][0]["outcome"] == "pending"
+    assert "Reflect phase" in data["reflections"][0]["text"]
+
+
+def test_compact_reflections_endpoint(client, tmp_settings, monkeypatch):
+    from src.orchestrator import artifacts
+
+    monkeypatch.setattr(artifacts.settings, "reflections_max_entries", 2)
+    reflections = tmp_settings.project_path / "reflections.md"
+    reflections.write_text(
+        artifacts._REFLECTIONS_PREAMBLE
+        + "## Cycle 1  2026-07-09T10:00:00Z  outcome:failed\n\nold failure\n"
+        + "\n## Cycle 2  2026-07-09T11:00:00Z  outcome:pending\n\nrecent reflect\n"
+        + "\n## Cycle 3  2026-07-09T12:00:00Z  outcome:passed\n\nnewest entry\n",
+        encoding="utf-8",
+    )
+
+    r = client.post("/api/state/reflections/compact")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["archived"] == 1
+    assert data["kept"] == 2
+    assert data["max_entries"] == 2
+    assert "old failure" not in reflections.read_text()
+    assert (tmp_settings.project_path / "reflections-archive").is_dir()
+
+
 def test_orchestrator_state_endpoint(client, tmp_settings):
     r = client.get("/api/orchestrator/state")
     assert r.status_code == 200

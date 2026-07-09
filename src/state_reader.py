@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
 from .config import settings
-from .models import JournalEntry, StateFile, TaskItem
+from .models import JournalEntry, ReflectionEntry, StateFile, TaskItem
 
 log = logging.getLogger("solo.state")
 
@@ -99,6 +100,33 @@ def parse_journal(content: str) -> list[JournalEntry]:
     return out
 
 
+_REFLECTION_HEADER = re.compile(
+    r"^## Cycle (\d+)\s+(\S+)\s+outcome:(\w+)(?:\s+sha:(\S+))?\s*$",
+    re.MULTILINE,
+)
+
+
+def parse_reflections(content: str) -> list[ReflectionEntry]:
+    """Parse reflections.md blocks headed by ``## Cycle N ... outcome:...``."""
+    out: list[ReflectionEntry] = []
+    matches = list(_REFLECTION_HEADER.finditer(content))
+    for i, match in enumerate(matches):
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        body = content[start:end].strip()
+        out.append(
+            ReflectionEntry(
+                cycle=int(match.group(1)),
+                timestamp=match.group(2),
+                outcome=match.group(3),
+                sha=match.group(4),
+                text=body,
+                raw=content[match.start() : end].strip(),
+            )
+        )
+    return out
+
+
 def read_tasks() -> StateFile:
     p = settings.state_dir / "tasks.md"
     return _read_with(p, parse_tasks, "tasks")
@@ -123,7 +151,13 @@ def read_backlog() -> StateFile:
 def read_reflections() -> StateFile:
     """Read reflections.md from project_path (the agent's episodic memory)."""
     p = Path(settings.project_path) / "reflections.md"
-    return _read_with(p, parse_journal, "entries")
+    sf = _read_file(p)
+    if sf.content:
+        try:
+            sf.reflections = parse_reflections(sf.content)
+        except Exception as e:
+            log.warning("parse %s failed: %s", p, e)
+    return sf
 
 
 def read_file(name: str) -> StateFile:

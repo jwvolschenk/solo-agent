@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Optional
 
+from fastapi import APIRouter, HTTPException, Query
+
+from ..config import settings
+from ..orchestrator import artifacts
 from ..state_reader import (
     list_summaries,
     read_backlog,
@@ -27,6 +31,7 @@ def _state_dict(sf) -> dict:
         "content": sf.content,
         "tasks": [t.model_dump(mode="json") for t in sf.tasks],
         "entries": [e.model_dump(mode="json") for e in sf.entries],
+        "reflections": [r.model_dump(mode="json") for r in sf.reflections],
     }
 
 
@@ -55,6 +60,25 @@ async def get_backlog() -> dict:
 async def get_reflections() -> dict:
     """The agent's episodic memory (reflections.md in project_path)."""
     return _state_dict(read_reflections())
+
+
+@api_router.post("/reflections/compact")
+async def compact_reflections(
+    max_entries: Optional[int] = Query(
+        default=None,
+        description="Rolling window size (defaults to REFLECTIONS_MAX_ENTRIES)",
+    ),
+) -> dict:
+    """One-shot compaction: archive old reflection entries, keep the recent window."""
+    archived = artifacts.compact_reflections(max_entries=max_entries)
+    sf = read_reflections()
+    limit = max_entries if max_entries is not None else settings.reflections_max_entries
+    return {
+        "archived": archived,
+        "kept": len(sf.reflections),
+        "max_entries": limit,
+        "path": str(settings.project_path / "reflections.md"),
+    }
 
 
 @api_router.get("/summaries")

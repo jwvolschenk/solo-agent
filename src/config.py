@@ -100,6 +100,14 @@ class Settings(BaseSettings):
     # How the loop waits between cycles when running.
     inter_cycle_delay_sec: float = 5.0
 
+    # Rolling window for reflections.md — older entries move to reflections-archive/.
+    # Set to 0 to disable trimming (not recommended for long-running loops).
+    reflections_max_entries: int = 15
+    # Prompt-injected memory brief (deterministic parse, no extra model call).
+    memory_brief_max_items: int = 6
+    memory_brief_item_max_chars: int = 220
+    memory_brief_max_chars: int = 1600
+
     # Control surface for startup. The loop does NOT auto-start unless told to.
     autostart_orchestrator: bool = False
 

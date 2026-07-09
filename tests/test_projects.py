@@ -136,3 +136,50 @@ def test_archive_backlog_nothing_done_returns_zero(tmp_settings):
     backlog.parent.mkdir(parents=True, exist_ok=True)
     backlog.write_text("# Backlog\n\n- [ ] only pending\n", encoding="utf-8")
     assert artifacts.archive_backlog() == 0
+
+
+def test_compact_reflections_archives_old_entries(tmp_settings, monkeypatch):
+    from src.orchestrator import artifacts
+
+    monkeypatch.setattr(artifacts.settings, "reflections_max_entries", 2)
+    reflections = artifacts.reflections_path()
+    reflections.parent.mkdir(parents=True, exist_ok=True)
+    reflections.write_text(
+        artifacts._REFLECTIONS_PREAMBLE
+        + "## Cycle 1  2026-07-09T10:00:00Z  outcome:failed\n\nfirst failure\n"
+        + "\n## Cycle 2  2026-07-09T11:00:00Z  outcome:pending\n\nreflect insight\n"
+        + "\n## Cycle 3  2026-07-09T12:00:00Z  outcome:passed\n\nthird entry\n",
+        encoding="utf-8",
+    )
+
+    archived = artifacts.compact_reflections()
+    assert archived == 1
+
+    remaining = reflections.read_text()
+    assert "first failure" not in remaining
+    assert "reflect insight" in remaining
+    assert "third entry" in remaining
+    assert remaining.count("## Cycle ") == 2
+
+    archives = list(artifacts.reflections_archive_dir().glob("reflections-*.md"))
+    assert len(archives) == 1
+    assert "first failure" in archives[0].read_text()
+
+
+def test_append_reflection_trims_when_over_max(tmp_settings, monkeypatch):
+    from src.orchestrator import artifacts
+
+    monkeypatch.setattr(artifacts.settings, "reflections_max_entries", 2)
+    reflections = artifacts.reflections_path()
+    reflections.parent.mkdir(parents=True, exist_ok=True)
+    reflections.write_text(artifacts._REFLECTIONS_PREAMBLE, encoding="utf-8")
+
+    artifacts.append_reflection("failure alpha", cycle=1, outcome="failed")
+    artifacts.append_reflection("reflect beta", cycle=2, outcome="pending")
+    artifacts.append_reflection("failure gamma", cycle=3, outcome="passed")
+
+    content = reflections.read_text()
+    assert "failure alpha" not in content
+    assert "reflect beta" in content
+    assert "failure gamma" in content
+    assert content.count("## Cycle ") == 2

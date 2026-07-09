@@ -5,7 +5,7 @@ Per the Ralph + Reflexion design, these cross cycle boundaries (and ONLY these):
                       Written once by the orchestrator; read by every fresh
                       session so the agent knows how to execute the loop.
   - backlog.md        the PRD / task list (mutated by the plan phase)
-  - reflections.md    append-only episodic memory of what worked / failed
+  - reflections.md    rolling recent memory; older entries in reflections-archive/
   - skills/           index of reusable tests/snippets the agent produced
 
 Everything else (the OpenCode session context) is wiped each cycle by design.
@@ -21,6 +21,13 @@ from typing import Optional
 from ..config import settings
 
 log = logging.getLogger("solo.artifacts")
+
+_REFLECTIONS_PREAMBLE = (
+    "# Reflections\n\n"
+    "# Recent-cycle memory. The orchestrator keeps the last entries here;\n"
+    "# older ones move to reflections-archive/. Read this file each session\n"
+    "# to avoid repeating failures — it is intentionally short.\n\n"
+)
 
 
 # The loop constitution. Written verbatim into SOLO_AGENT.md in the target repo.
@@ -68,7 +75,7 @@ Since your session is wiped each time, your only memory is these files:
 | `GOAL.md` | the overarching goal for the project | read every session — it drives all work |
 | `SOLO_AGENT.md` | this protocol | read first, every session |
 | `directives.md` | human guidance queued for you | read every session — pending directives are PRIORITY work |
-| `reflections.md` | what's been tried, what worked/failed | read second — avoid repeating failures |
+| `reflections.md` | recent failures + reflect insights (bounded) | read each session — avoid repeating mistakes |
 | `backlog.md` | the task list | REFLECT adds to it; EXECUTE pulls the next `- [ ]` task |
 | `skills/INDEX.md` | reusable snippets/tests the loop produced | consult before implementing |
 
@@ -105,7 +112,7 @@ Since your session is wiped each time, your only memory is these files:
 8. **Be honest.** If a task is blocked, invalid, or you can't complete it — say so
    clearly in your final message. Don't pretend success.
 9. **Reverts can happen.** If an orchestrator gate fails, your work may be reverted.
-   That's normal — read reflections.md to learn why.
+   That's normal — read reflections.md (recent memory only) to learn why.
 
 ## Stop signal
 
@@ -169,13 +176,9 @@ def ensure_artifacts() -> None:
             encoding="utf-8",
         )
     if not reflections_path().exists():
-        reflections_path().write_text(
-            "# Reflections\n\n"
-            "# Append-only episodic memory. After each cycle, the orchestrator\n"
-            "# records what was attempted and the verify outcome. Read at the\n"
-            "# start of each fresh session so the agent doesn't repeat failures.\n\n",
-            encoding="utf-8",
-        )
+        reflections_path().write_text(_REFLECTIONS_PREAMBLE, encoding="utf-8")
+    else:
+        compact_reflections()
     # directives.md: created with a header if missing. The directives module owns
     # the per-block format; we just ensure the file exists so the agent sees it.
     dir_path = _workspace() / "directives.md"
@@ -244,6 +247,13 @@ def history_dir() -> Path:
     return d
 
 
+def reflections_archive_dir() -> Path:
+    """Where rolled-off reflection entries are stored."""
+    d = _workspace() / "reflections-archive"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def archive_backlog() -> int:
     """Move completed (`- [x]`) backlog items into a dated history file.
 
@@ -308,14 +318,82 @@ def read_reflections() -> str:
     return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
 
 
+def should_record_execute_reflection(*, tasks_attempted: int, tasks_passed: int) -> bool:
+    """Whether an execute cycle warrants an append to reflections.md.
+
+    Successful all-pass cycles are recorded in the cycles DB only — repeating
+    "Executed N tasks; N completed" in reflections.md bloats agent context
+    without helping future sessions avoid failures.
+    """
+    if tasks_attempted == 0:
+        return False
+    return tasks_passed < tasks_attempted
+
+
 def append_reflection(entry: str, *, cycle: int, outcome: str, sha: Optional[str] = None) -> None:
-    """Append a timestamped reflection entry. Never edits prior entries."""
+    """Append a timestamped reflection entry, then trim to the rolling window."""
     ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     sha_part = f" sha:{sha[:10]}" if sha else ""
     block = f"\n## Cycle {cycle}  {ts}  outcome:{outcome}{sha_part}\n\n{entry.strip()}\n"
     with reflections_path().open("a", encoding="utf-8") as f:
         f.write(block)
     log.info("appended reflection for cycle %d (%s)", cycle, outcome)
+    compact_reflections()
+
+
+def compact_reflections(
+    max_entries: Optional[int] = None,
+    *,
+    workspace: Optional[Path] = None,
+) -> int:
+    """Keep only the most recent reflection entries; archive the rest.
+
+    Returns the number of entries moved to reflections-archive/.
+    """
+    limit = settings.reflections_max_entries if max_entries is None else max_entries
+    if limit <= 0:
+        return 0
+
+    ws = Path(workspace) if workspace is not None else _workspace()
+    path = ws / "reflections.md"
+    if not path.exists():
+        return 0
+
+    from ..state_reader import parse_reflections
+
+    content = path.read_text(encoding="utf-8", errors="replace")
+    entries = parse_reflections(content)
+    if len(entries) <= limit:
+        return 0
+
+    archive_entries = entries[: len(entries) - limit]
+    keep_entries = entries[len(entries) - limit :]
+
+    first_raw = entries[0].raw
+    idx = content.find(first_raw)
+    preamble = content[:idx] if idx > 0 else _REFLECTIONS_PREAMBLE
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    archive_dir = ws / "reflections-archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / f"reflections-{today}.md"
+    with archive_path.open("a", encoding="utf-8") as f:
+        f.write(f"\n## Archived {today} ({len(archive_entries)} entries)\n\n")
+        for entry in archive_entries:
+            f.write(entry.raw + "\n")
+
+    new_content = preamble.rstrip() + "\n"
+    for entry in keep_entries:
+        new_content += "\n" + entry.raw + "\n"
+    path.write_text(new_content.rstrip() + "\n", encoding="utf-8")
+    log.info(
+        "compacted reflections at %s: archived %d, kept %d (limit %d)",
+        ws,
+        len(archive_entries),
+        len(keep_entries),
+        limit,
+    )
+    return len(archive_entries)
 
 
 def read_skill_index() -> str:

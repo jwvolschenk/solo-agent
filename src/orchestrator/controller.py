@@ -27,6 +27,7 @@ from ..models import ActivityEvent, CycleRecord, OrchestratorState, TranscriptEv
 from ..state_reader import parse_tasks
 from .. import transcript
 from . import artifacts, budget, guardrails, prompts
+from .memory import build_memory_brief
 from .runner import new_session_id, set_activity_hook
 from .git_ops import (
     commit_all,
@@ -303,8 +304,9 @@ class OrchestratorController:
                     session_id=sid, cycle=cycle, task=task.text,
                 ))
                 task_snap = await snapshot()
+                memory_brief = build_memory_brief()
                 res = await run_goal(
-                    prompts.execute_prompt(cycle, task.text),
+                    prompts.execute_prompt(cycle, task.text, memory_brief=memory_brief),
                     title=f"solo cycle {cycle} task",
                     session_id=sid,
                 )
@@ -350,7 +352,12 @@ class OrchestratorController:
                 + (" (gate passed)" if gate else " (no gate; agent self-verified)")
                 + f". {lines} lines changed."
             )
-            artifacts.append_reflection(reflection_text, cycle=cycle, outcome=outcome, sha=head)
+            if artifacts.should_record_execute_reflection(
+                tasks_attempted=tasks_attempted, tasks_passed=tasks_passed
+            ):
+                artifacts.append_reflection(
+                    reflection_text, cycle=cycle, outcome=outcome, sha=head
+                )
             await self._record_cycle(
                 cycle, outcome=outcome, sha=snap, head_sha=head, lines=lines,
                 tokens=budget.budget.cycle_tokens, attempted=tasks_attempted,
@@ -374,12 +381,14 @@ class OrchestratorController:
             self.state.phase = "reflect"
             self._persist()
             sid = new_session_id()
+            memory_brief = build_memory_brief()
             await transcript.record(TranscriptEvent(
                 id=sid, kind="session_start", status="running",
                 session_id=sid, cycle=cycle, task="reflect + plan",
             ))
             reflect = await run_goal(
-                prompts.reflect_prompt(cycle), title=f"solo cycle {cycle} reflect",
+                prompts.reflect_prompt(cycle, memory_brief=memory_brief),
+                title=f"solo cycle {cycle} reflect",
                 session_id=sid,
             )
             await transcript.record(TranscriptEvent(

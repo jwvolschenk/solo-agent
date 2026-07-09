@@ -13,13 +13,15 @@ from __future__ import annotations
 ORIENT = (
     "Read SOLO_AGENT.md (your operating protocol), GOAL.md (the project's "
     "overarching goal), directives.md (human guidance — pending ones are "
-    "priority), and reflections.md (prior-cycle memory). You are a fresh "
-    "session in an autonomous loop; those files are how you get oriented."
+    "priority), and reflections.md (recent-cycle memory — failures and reflect "
+    "insights only, not full history). You are a fresh session in an autonomous "
+    "loop; those files are how you get oriented."
 )
 
 
-def reflect_prompt(cycle: int) -> str:
-    return f"""{ORIENT}
+def reflect_prompt(cycle: int, memory_brief: str = "") -> str:
+    memory = f"\n\n{memory_brief}\n" if memory_brief else ""
+    return f"""{ORIENT}{memory}
 
 PHASE: REFLECT (cycle {cycle}). The backlog has been cleared — all previous goals
 are done and archived. It's time to find the next round of work.
@@ -55,14 +57,15 @@ don't delete items — move obsolete ones to a `## Archived` section at the bott
 End with: DONE: <the task ordering, one line>"""
 
 
-def execute_prompt(cycle: int, task_text: str) -> str:
-    return f"""{ORIENT}
+def execute_prompt(cycle: int, task_text: str, memory_brief: str = "") -> str:
+    memory = f"\n\n{memory_brief}\n" if memory_brief else ""
+    return f"""{ORIENT}{memory}
 
 PHASE: EXECUTE (cycle {cycle}). Implement exactly ONE task:
 
     {task_text}
 
-Read reflections.md to avoid repeating past failures, then make the change.
+Read reflections.md for recent failures and reflect insights, then make the change.
 Stay in scope — don't refactor unrelated code.
 
 **Marking the task done**: when you complete the task (or discover it was

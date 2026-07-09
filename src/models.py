@@ -147,6 +147,17 @@ class JournalEntry(BaseModel):
     raw: str = ""
 
 
+class ReflectionEntry(BaseModel):
+    """One block from reflections.md (## Cycle N ... headers)."""
+
+    cycle: int
+    outcome: str
+    text: str
+    timestamp: str = ""
+    sha: Optional[str] = None
+    raw: str = ""
+
+
 class StateFile(BaseModel):
     """A parsed shared-state file."""
 
@@ -159,6 +170,7 @@ class StateFile(BaseModel):
     # structured payloads depending on file:
     tasks: list[TaskItem] = Field(default_factory=list)  # for tasks.md
     entries: list[JournalEntry] = Field(default_factory=list)  # for journal.md
+    reflections: list[ReflectionEntry] = Field(default_factory=list)  # for reflections.md
 
 
 # ============================================================================

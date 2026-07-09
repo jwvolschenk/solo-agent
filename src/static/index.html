@@ -809,8 +809,15 @@ async function renderBacklogReflections() {
   } else {
     $('backlogList').innerHTML = '<div class="text-gray-600">no backlog yet</div>';
   }
-  if (ref?.entries?.length) {
-    $('reflectionsList').innerHTML = ref.entries.slice(-8).reverse().map(e => `<div class="text-gray-400 border-l-2 border-[#2a2a36] pl-2">${esc(e.text)}</div>`).join('');
+  if (ref?.reflections?.length) {
+    const oc = { passed: 'text-green-500', failed: 'text-red-400', pending: 'text-yellow-500', errored: 'text-red-400', paused: 'text-gray-500' };
+    $('reflectionsList').innerHTML = ref.reflections.slice(-8).reverse().map(r => `
+      <div class="border-l-2 border-[#2a2a36] pl-2">
+        <div class="text-gray-500 mb-0.5">cycle ${r.cycle} · <span class="${oc[r.outcome]||'text-gray-400'}">${esc(r.outcome)}</span></div>
+        <div class="text-gray-400">${esc(r.text.slice(0, 240))}${r.text.length > 240 ? '…' : ''}</div>
+      </div>`).join('');
+  } else {
+    $('reflectionsList').innerHTML = '<div class="text-gray-600">no reflections yet</div>';
   }
 }
 
