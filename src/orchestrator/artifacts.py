@@ -8,12 +8,15 @@ Per the Ralph + Reflexion design, these cross cycle boundaries (and ONLY these):
   - backlog-candidates.md   planner inbox — coarse themes from REFLECT + orchestrator seeds
   - reflections.md    rolling recent memory; older entries in reflections-archive/
   - skills/           index of reusable tests/snippets the agent produced
+  - CODEDB.md         project-specific codedb navigation guide (agent-maintained;
+                      auto-loaded via .opencode/opencode.json instructions)
 
 Everything else (the OpenCode session context) is wiped each cycle by design.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +89,7 @@ Since your session is wiped each time, your only memory is these files:
 | `backlog-candidates.md` | planner inbox (coarse themes) | REFLECT + orchestrator seeds append here; PLAN consumes and clears |
 | `backlog.md` | executor queue (one-session tasks) | PLAN writes ready tasks; EXECUTE pulls the next `- [ ]` |
 | `skills/INDEX.md` | reusable snippets/tests the loop produced | consult before implementing |
+| `CODEDB.md` | codedb MCP navigation for *this* repo | auto-loaded every session — prefer codedb over grep; update as you learn |
 
 ## Directives (human steering)
 
@@ -98,6 +102,8 @@ Since your session is wiped each time, your only memory is these files:
 - When you complete it, edit the `status:` line to `done`.
 - The human uses these to steer you: "use JWT not sessions", "focus on tests next",
   "this bug is critical", etc.
+- A common directive: **review and improve `CODEDB.md`** with navigation patterns,
+  entry points, and lessons learned while working in this codebase.
 
 ## Rules (non-negotiable)
 
@@ -133,6 +139,64 @@ starting with `DONE:` followed by a one-line summary, e.g.:
 Then stop. The orchestrator detects completion from this. Do not ask questions
 or wait for further input — this runs unattended.
 """
+
+# Agent-maintained navigation guide. Seeded once; OpenCode auto-loads it via
+# .opencode/opencode.json instructions. Agents (or a human directive) flesh out
+# the project-specific sections as they learn the codebase.
+_CODEDB_MD_STUB = """\
+# CODEDB.md — Code Navigation for This Repo
+
+OpenCode auto-loads this file every session (via `.opencode/opencode.json`).
+Use the **codedb MCP tools** to explore this codebase — they are indexed,
+symbol-aware, and faster than blind grep/glob.
+
+## Tool cheat sheet (generic)
+
+| Tool | When to use |
+|---|---|
+| `codedb_outline` | Before reading a large file — see functions/structs/imports |
+| `codedb_symbol` | Jump to where a type or function is **defined** |
+| `codedb_word` | Every occurrence of an exact identifier |
+| `codedb_callers` | Who calls / references a symbol |
+| `codedb_deps` | Import blast radius for a file |
+| `codedb_search` | Substring or regex search across the index |
+| `codedb_query` | Chain find → outline → read in one call |
+| `codedb_index` | (Re)build the index after big structural changes |
+
+Prefer codedb over grep/find when you have an identifier or know the file shape.
+
+## Index setup
+
+- Index command: `codedb index <project-root>` (or MCP `codedb_index`)
+- Ignore rules: `.codedbignore` (if present)
+- Re-index when: parsers change, `.codedbignore` changes, or search feels stale
+
+*(Fill in project-root path and any index quirks below.)*
+
+## Entry points
+
+*(List the main modules, routes, or subsystems a new session should know about.
+Example: `src/main.py` → FastAPI app, `src/orchestrator/controller.py` → Ralph loop.)*
+
+## Navigation patterns
+
+*(Project-specific recipes, e.g. "for API routes use codedb_routes", "start
+changes with codedb_deps on the file you are editing", "hot files from
+codedb_hot".)*
+
+## Gotchas
+
+*(Build layout, generated code paths to skip, monorepo package boundaries, etc.)*
+
+---
+
+**Maintainers:** update this file as you learn the codebase. Humans can queue a
+directive in `directives.md` to review and improve it. Keep it concise — every
+line is paid for in every session.
+"""
+
+# Instruction files the orchestrator ensures are listed in opencode.json.
+_OPENCODE_INSTRUCTION_FILES = ("CODEDB.md",)
 
 
 def _workspace() -> Path:
@@ -174,6 +238,63 @@ def reflections_path() -> Path:
 
 def skills_dir() -> Path:
     return _workspace() / "skills"
+
+
+def codedb_path() -> Path:
+    return _workspace() / "CODEDB.md"
+
+
+def opencode_config_path() -> Path:
+    return _workspace() / ".opencode" / "opencode.json"
+
+
+def ensure_codedb_guide() -> None:
+    """Create CODEDB.md if missing. Agent-maintained after first seed."""
+    path = codedb_path()
+    if not path.exists():
+        path.write_text(_CODEDB_MD_STUB, encoding="utf-8")
+        log.info("seeded %s", path)
+
+
+def ensure_opencode_instructions() -> None:
+    """Ensure .opencode/opencode.json lists CODEDB.md in instructions.
+
+    Merges into an existing config (preserves mcp, provider, etc.). Idempotent.
+    """
+    config_path = opencode_config_path()
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            log.warning("could not parse %s; skipping instructions merge", config_path)
+            return
+    else:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"$schema": "https://opencode.ai/config.json"}
+
+    raw = data.get("instructions")
+    if raw is None:
+        instructions: list[str] = []
+    elif isinstance(raw, str):
+        instructions = [raw]
+    elif isinstance(raw, list):
+        instructions = [str(x) for x in raw]
+    else:
+        log.warning("opencode.json instructions is not a list; skipping merge")
+        return
+
+    changed = False
+    for name in _OPENCODE_INSTRUCTION_FILES:
+        if name not in instructions:
+            instructions.insert(0, name)
+            changed = True
+
+    if not changed:
+        return
+
+    data["instructions"] = instructions
+    config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    log.info("updated %s instructions: %s", config_path, instructions)
 
 
 def ensure_artifacts() -> None:
@@ -225,6 +346,8 @@ def ensure_artifacts() -> None:
             "# Skill Index\n\nReusable artifacts produced across cycles.\n\n",
             encoding="utf-8",
         )
+    ensure_codedb_guide()
+    ensure_opencode_instructions()
     relocate_stale_seeds()
 
 

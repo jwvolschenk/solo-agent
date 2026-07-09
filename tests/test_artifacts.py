@@ -1,0 +1,58 @@
+"""Artifact bootstrap tests — CODEDB.md and opencode.json instructions."""
+
+import json
+
+from src.orchestrator import artifacts
+
+
+def test_ensure_codedb_guide_creates_stub(tmp_settings):
+    artifacts.ensure_codedb_guide()
+    path = artifacts.codedb_path()
+    assert path.exists()
+    content = path.read_text(encoding="utf-8")
+    assert "codedb MCP" in content
+    assert "Entry points" in content
+
+
+def test_ensure_codedb_guide_does_not_overwrite_existing(tmp_settings):
+    path = artifacts.codedb_path()
+    path.write_text("# Custom guide\n\nMy notes.\n", encoding="utf-8")
+    artifacts.ensure_codedb_guide()
+    assert path.read_text(encoding="utf-8") == "# Custom guide\n\nMy notes.\n"
+
+
+def test_ensure_opencode_instructions_creates_config(tmp_settings):
+    artifacts.ensure_opencode_instructions()
+    config_path = artifacts.opencode_config_path()
+    assert config_path.exists()
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["instructions"] == ["CODEDB.md"]
+
+
+def test_ensure_opencode_instructions_merges_existing(tmp_settings):
+    config_path = artifacts.opencode_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "mcp": {"codedb": {"type": "local", "command": ["codedb", "mcp"]}},
+                "instructions": ["CONTRIBUTING.md"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifacts.ensure_opencode_instructions()
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["instructions"] == ["CODEDB.md", "CONTRIBUTING.md"]
+    assert "mcp" in data
+
+
+def test_ensure_artifacts_wires_codedb(tmp_settings):
+    artifacts.ensure_artifacts()
+    assert artifacts.codedb_path().exists()
+    data = json.loads(artifacts.opencode_config_path().read_text(encoding="utf-8"))
+    assert "CODEDB.md" in data["instructions"]
+    solo = artifacts.solo_agent_path().read_text(encoding="utf-8")
+    assert "CODEDB.md" in solo

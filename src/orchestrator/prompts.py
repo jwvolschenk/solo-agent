@@ -12,10 +12,11 @@ from __future__ import annotations
 
 ORIENT = (
     "Read SOLO_AGENT.md (your operating protocol), GOAL.md (the project's "
-    "overarching goal), directives.md (human guidance — pending ones are "
-    "priority), and reflections.md (recent-cycle memory — failures and reflect "
-    "insights only, not full history). You are a fresh session in an autonomous "
-    "loop; those files are how you get oriented."
+    "overarching goal), CODEDB.md (codedb navigation for this repo — also "
+    "auto-loaded by OpenCode), directives.md (human guidance — pending ones "
+    "are priority), and reflections.md (recent-cycle memory — failures and "
+    "reflect insights only, not full history). You are a fresh session in an "
+    "autonomous loop; those files are how you get oriented."
 )
 
 

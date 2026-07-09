@@ -47,17 +47,13 @@ python -m pytest -q    # 61 tests (parsers, routes, directives, runner, verify, 
 ```
 
 ## Using CodeDB
-codedb is a symbol-aware code navigation MCP server. Use it for:
-- `codedb_word` — exact identifier lookup (fastest)
-- `codedb_symbol` — find definitions (class, method, etc.)
-- `codedb_search` — substring/regex search
-- `codedb_outline` — file structure (run before reading large files)
-- `codedb_read` — read file lines (use outline to pick range)
-- `codedb_callers` — find who calls a function
-- `codedb_deps` — dependency graph (blast radius)
-- `codedb_query` — chain ops in one call to save round-trips
 
-Prefer codedb over grep/find — it's indexed and symbol-ranked.
+Project-specific navigation lives in **`CODEDB.md`** (auto-loaded via
+`.opencode/opencode.json`). Update it as you learn this codebase; humans can
+queue a directive to review and improve it.
+
+For generic tool reference, see the cheat sheet at the top of `CODEDB.md`.
+Prefer codedb MCP tools over grep/find — they're indexed and symbol-ranked.
 
 ## Conventions
 - Python 3.12, type hints required
