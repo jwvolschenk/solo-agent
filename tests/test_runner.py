@@ -164,3 +164,15 @@ async def test_runner_tags_transcript_events_with_provided_session_id(monkeypatc
 def test_new_session_id_is_public_and_prefixed():
     from src.orchestrator import runner
     assert runner.new_session_id().startswith("solo-")
+
+
+@pytest.mark.asyncio
+async def test_runner_handles_stdout_line_over_64k(monkeypatch):
+    """Regression: NDJSON lines > 64 KiB must not crash (default limit is 4 MiB)."""
+    monkeypatch.setenv("AGENT_MODE", "huge")
+    from src.orchestrator import runner
+
+    result = await runner.run_goal("stress oversized stdout line")
+    assert result.ok is True
+    assert "DONE: huge line ok" in result.final_message
+

@@ -29,6 +29,7 @@ from .. import transcript
 from . import artifacts, budget, guardrails, prompts
 from .memory import build_memory_brief
 from .runner import new_session_id, set_activity_hook
+from . import trace
 from .git_ops import (
     commit_all,
     diff_stat,
@@ -104,6 +105,16 @@ class OrchestratorController:
         self._resume()
         self.state.project_id = project_id
         self._persist()
+        trace.bind(
+            project_id=project_id,
+            cycle=self.state.cycle_number,
+            phase=self.state.phase,
+        )
+        trace.lifecycle(
+            "switch_project",
+            project_id=project_id,
+            path=str(settings.project_path),
+        )
         log.info("switched to project %s (path=%s)", project_id, settings.project_path)
         return "switched"
 
@@ -128,8 +139,26 @@ class OrchestratorController:
             self.state.phase = "paused"
             self.state.running = False
         self.state.project_id = pid or None
+        trace.bind(
+            project_id=pid or None,
+            cycle=self.state.cycle_number,
+            phase=self.state.phase,
+        )
+        trace.lifecycle(
+            "resume_state",
+            cycle=self.state.cycle_number,
+            phase=self.state.phase,
+            running=self.state.running,
+        )
 
-    # ---- lifecycle -----------------------------------------------------------
+    def _set_phase(self, phase: str, *, reason: str | None = None) -> None:
+        """Update phase, log the transition, and persist."""
+        prev = self.state.phase
+        if prev != phase:
+            trace.bind(phase=phase, cycle=self.state.cycle_number, project_id=self.active_project_id)
+            trace.phase_transition(prev, phase, reason=reason)
+        self.state.phase = phase
+        self._persist()
 
     async def start(self) -> str:
         """Begin cycling. Requires an active project with a goal."""
@@ -137,9 +166,9 @@ class OrchestratorController:
         if not settings.goal.strip():
             msg = "no goal set — set one on the active project before starting"
             log.error(msg)
-            self.state.phase = "error"
+            trace.error("start_blocked", reason=msg)
+            self._set_phase("error", reason=msg)
             self.state.last_error = msg
-            self._persist()
             return msg
 
         # load the project's stop_after_cycle flag into state
@@ -156,6 +185,7 @@ class OrchestratorController:
         if self._task is not None and not self._task.done():
             return "already running"
         guardrails.kill_switch.clear()
+        self._reset_stall_detectors()
         # wire the runner's tool calls into the activity feed
         set_activity_hook(
             lambda t, m, meta: insert_activity(
@@ -163,18 +193,27 @@ class OrchestratorController:
             )
         )  # type: ignore[arg-type]
         self.state.running = True
-        self.state.phase = "idle"
         self.state.last_error = None
-        self._persist()
+        trace.bind(
+            project_id=self.active_project_id,
+            cycle=self.state.cycle_number,
+        )
+        self._set_phase("idle", reason="start")
         self._task = asyncio.create_task(self._loop(), name="orchestrator")
+        trace.lifecycle(
+            "start",
+            project_id=self.active_project_id,
+            path=str(settings.project_path),
+            goal_chars=len(settings.goal),
+        )
         log.info("orchestrator started (project=%s, goal=%d chars)", settings.project_path, len(settings.goal))
         return "started"
 
     async def pause(self) -> str:
         """Pause between cycles (current cycle finishes its phase)."""
         self.state.running = False
-        self.state.phase = "paused"
-        self._persist()
+        self._set_phase("paused", reason="pause")
+        trace.lifecycle("pause")
         log.info("orchestrator paused")
         return "paused"
 
@@ -182,10 +221,11 @@ class OrchestratorController:
         """Resume from pause."""
         if self._task is not None and not self._task.done():
             return "already running"
+        self._reset_stall_detectors()
         self.state.running = True
-        self.state.phase = "idle"
-        self._persist()
+        self._set_phase("idle", reason="resume")
         self._task = asyncio.create_task(self._loop(), name="orchestrator")
+        trace.lifecycle("resume")
         return "resumed"
 
     async def stop(self) -> str:
@@ -199,10 +239,10 @@ class OrchestratorController:
                 pass
             self._task = None
         self.state.running = False
-        self.state.phase = "stopped"
+        self._set_phase("stopped", reason="stop")
         guardrails.kill_switch.clear()
         set_activity_hook(None)  # stop logging tool calls
-        self._persist()
+        trace.lifecycle("stop")
         log.info("orchestrator stopped")
         return "stopped"
 
@@ -214,14 +254,15 @@ class OrchestratorController:
             try:
                 await self._run_cycle()
             except asyncio.CancelledError:
+                trace.lifecycle("cancelled")
                 log.info("orchestrator task cancelled")
                 raise
             except Exception as e:
                 log.exception("cycle crashed: %s", e)
-                self.state.phase = "error"
+                trace.error("cycle_crashed", error=str(e))
+                self._set_phase("error", reason=str(e))
                 self.state.last_error = str(e)
                 self.state.running = False
-                self._persist()
                 return
 
             if not self.state.running:
@@ -229,15 +270,18 @@ class OrchestratorController:
             # soft-stop-after-cycle: the cycle finished cleanly; now stop before
             # starting a new one so the human can evaluate the workspace.
             if self.state.stop_after_cycle:
+                trace.lifecycle(
+                    "stop_after_cycle",
+                    cycle=self.state.cycle_number,
+                )
                 log.info("stop_after_cycle flag tripped — stopping after cycle %d", self.state.cycle_number)
                 self.state.running = False
-                self.state.phase = "stopped"
+                self._set_phase("stopped", reason="stop_after_cycle")
                 self.state.stop_after_cycle = False  # clear so a later Start runs normally
                 # also clear the flag on the project record
                 if self.active_project_id:
                     update_project(self.active_project_id, stop_after_cycle=0)
                 set_activity_hook(None)
-                self._persist()
                 break
             # brief breather between cycles
             try:
@@ -258,14 +302,15 @@ class OrchestratorController:
         finishes existing goals before looking for new ones.
         """
         if guardrails.kill_switch.engaged:
+            trace.guardrail("kill_switch", guardrails.kill_switch.reason or "engaged")
             self.state.running = False
-            self.state.phase = "stopped"
-            self._persist()
+            self._set_phase("stopped", reason="kill_switch")
             return
         budget.budget.rollover_day_if_needed()
 
         self.state.cycle_number += 1
         cycle = self.state.cycle_number
+        trace.bind(cycle=cycle, project_id=self.active_project_id, task=None, session_id=None)
         budget.reset_cycle()
         guardrails.loop_detector.reset()
         self.state.cycle_tokens_used = 0
@@ -281,6 +326,9 @@ class OrchestratorController:
         tasks_attempted = 0
         tasks_passed = 0
         gate = verify_enabled()
+        outcome = "paused"
+        head: Optional[str] = None
+        lines = 0
 
         # --- Check the backlog: are there pending executor tasks? ---
         backlog_tasks = parse_tasks(artifacts.read_backlog())
@@ -288,25 +336,55 @@ class OrchestratorController:
             t for t in backlog_tasks
             if t.status == "todo" and not artifacts.is_planner_only_task(t.text)
         ]
+        drift_msg = artifacts.backlog_format_drift()
+        trace.info(
+            "cycle_start",
+            snapshot_sha=(snap[:10] if snap else None),
+            pending_tasks=len(pending),
+            verify_gate=gate,
+            path="execute" if pending else "reflect",
+            backlog_format_drift=bool(drift_msg),
+        )
+
+        if not pending and drift_msg:
+            log.warning("[cycle %d] %s — pausing", cycle, drift_msg)
+            trace.guardrail(
+                "backlog_format_drift",
+                drift_msg,
+                headings=artifacts.count_task_headings(artifacts.read_backlog()),
+            )
+            self.state.running = False
+            self._set_phase("paused", reason="backlog_format_drift")
+            self.state.last_error = drift_msg
+            await self._record_cycle(
+                cycle, outcome="paused", error=drift_msg, sha=snap,
+            )
+            trace.info("cycle_end", outcome="paused", error=drift_msg, lines=0)
+            return
 
         if pending:
             if guardrails.kill_switch.engaged:
-                self.state.phase = "idle"
-                self._persist()
+                self._set_phase("idle", reason="kill_switch_mid_cycle")
                 return
             # ---- EXECUTE PATH: one backlog task per cycle ----
             task = pending[0]
+            trace.bind(task=task.text)
+            trace.info(
+                "execute_task",
+                pending_count=len(pending),
+                task_preview=task.text[:120],
+            )
             log.info(
                 "[cycle %d] executing 1 of %d pending backlog task(s): %s",
                 cycle, len(pending), task.text[:80],
             )
-            self.state.phase = "execute"
-            self._persist()
+            self._set_phase("execute", reason="backlog_task")
             tasks_attempted = 1
             self.state.current_task = task.text
             self._persist()
 
             sid = new_session_id()
+            trace.bind(session_id=sid)
             await transcript.record(TranscriptEvent(
                 id=sid, kind="session_start", status="running",
                 session_id=sid, cycle=cycle, task=task.text,
@@ -329,29 +407,39 @@ class OrchestratorController:
 
             if not res.ok:
                 log.warning("[cycle %d] task agent failed: %s", cycle, res.error)
+                trace.warning(
+                    "execute_failed",
+                    error=res.error,
+                    timed_out=res.timed_out,
+                    session_id=res.session_id,
+                )
                 if gate and task_snap:
+                    trace.git_action("revert", reason="agent_failed", sha=task_snap[:10])
                     await revert_to(task_snap)
             elif gate:
-                self.state.phase = "verify"
-                self._persist()
+                self._set_phase("verify", reason="agent_ok")
                 verify = await run_verify()
                 if not verify.ok:
                     log.warning("[cycle %d] VERIFY FAIL, reverting: %s", cycle, verify.summary())
+                    trace.warning("verify_revert", summary=verify.summary())
                     if task_snap:
+                        trace.git_action("revert", reason="verify_failed", sha=task_snap[:10])
                         await revert_to(task_snap)
                 else:
                     tasks_passed = 1
                     await stage_all()
                     await commit_all(f"solo-agent cycle {cycle}: {task.text[:72]}")
+                    trace.git_action("commit", reason="verify_passed", tasks_passed=1)
                     log.info("[cycle %d] task committed", cycle)
             else:
                 tasks_passed = 1
                 await stage_all()
                 await commit_all(f"solo-agent cycle {cycle}: {task.text[:72]}")
+                trace.git_action("commit", reason="no_verify_gate", tasks_passed=1)
                 log.info("[cycle %d] task committed", cycle)
 
             # record the execute cycle
-            self.state.phase = "record"
+            self._set_phase("record", reason="execute_complete")
             head = await snapshot()
             lines = await diff_stat(snap) if snap else 0
             outcome = "passed" if tasks_passed > 0 else ("failed" if tasks_attempted else "paused")
@@ -376,6 +464,7 @@ class OrchestratorController:
 
         else:
             # ---- REFLECT PATH: backlog empty/all-done → archive, then plan ----
+            trace.info("reflect_path", reason="backlog_clear")
             log.info("[cycle %d] backlog clear — archiving + reflecting", cycle)
 
             # Step 1: archive completed items into a dated history file
@@ -383,12 +472,13 @@ class OrchestratorController:
             if archived:
                 await stage_all()
                 await commit_all(f"solo-agent cycle {cycle}: archive {archived} completed backlog items")
+                trace.info("backlog_archived", count=archived)
                 log.info("[cycle %d] archived %d completed items", cycle, archived)
 
             # Step 2: reflect to find candidate work
-            self.state.phase = "reflect"
-            self._persist()
+            self._set_phase("reflect", reason="backlog_clear")
             sid = new_session_id()
+            trace.bind(session_id=sid, task="reflect")
             memory_brief = build_memory_brief()
             await transcript.record(TranscriptEvent(
                 id=sid, kind="session_start", status="running",
@@ -409,12 +499,19 @@ class OrchestratorController:
             self._persist()
 
             if not reflect.ok:
+                trace.warning("reflect_failed", error=reflect.error)
                 await self._record_cycle(
                     cycle, outcome="errored", error=reflect.error or "reflect failed",
                     sha=snap, tokens=reflect.tokens_used,
                 )
                 self.state.consecutive_fail_cycles += 1
                 await self._maybe_pause_on_stall(cycle)
+                trace.info(
+                    "cycle_end",
+                    outcome="errored",
+                    path="reflect",
+                    error=reflect.error,
+                )
                 return
 
             # Step 3: ensure planner inbox has candidates (orchestrator seed if
@@ -424,6 +521,7 @@ class OrchestratorController:
             fallback_task: Optional[str] = None
             if not pending_candidates:
                 fallback_task = artifacts.append_fallback_candidate(cycle)
+                trace.info("reflect_fallback_seed", category=fallback_task)
                 log.info("[cycle %d] reflect produced no candidates; orchestrator seeded fallback", cycle)
                 candidate_tasks = parse_tasks(artifacts.read_candidates())
                 pending_candidates = [t for t in candidate_tasks if t.status == "todo"]
@@ -431,9 +529,9 @@ class OrchestratorController:
             # Step 4: plan — decompose candidate themes into backlog.md tasks.
             plan_summary = ""
             if pending_candidates:
-                self.state.phase = "plan"
-                self._persist()
+                self._set_phase("plan", reason="candidates_ready")
                 plan_sid = new_session_id()
+                trace.bind(session_id=plan_sid, task="plan")
                 await transcript.record(TranscriptEvent(
                     id=plan_sid, kind="session_start", status="running",
                     session_id=plan_sid, cycle=cycle, task="plan",
@@ -453,8 +551,10 @@ class OrchestratorController:
                 self._persist()
                 if not plan.ok:
                     log.warning("[cycle %d] PLAN failed: %s", cycle, plan.error)
+                    trace.warning("plan_failed", error=plan.error)
                     plan_summary = f" Plan failed ({plan.error or 'unknown'}); backlog unchanged."
                 else:
+                    trace.info("plan_complete", message_preview=plan.final_message[:200])
                     plan_summary = f" Plan: {plan.final_message[:200]}"
 
             backlog_tasks = parse_tasks(artifacts.read_backlog())
@@ -462,6 +562,25 @@ class OrchestratorController:
                 t for t in backlog_tasks
                 if t.status == "todo" and not artifacts.is_planner_only_task(t.text)
             ]
+            post_plan_drift = artifacts.backlog_format_drift()
+            if post_plan_drift and not new_pending:
+                log.warning("[cycle %d] %s — pausing", cycle, post_plan_drift)
+                trace.guardrail(
+                    "backlog_format_drift",
+                    post_plan_drift,
+                    headings=artifacts.count_task_headings(artifacts.read_backlog()),
+                    phase="post_plan",
+                )
+                self.state.running = False
+                self._set_phase("paused", reason="backlog_format_drift")
+                self.state.last_error = post_plan_drift
+                await self._record_cycle(
+                    cycle, outcome="paused", error=post_plan_drift, sha=snap,
+                    tokens=budget.budget.cycle_tokens,
+                    summary=(reflect.final_message[:250] + plan_summary)[:500],
+                )
+                trace.info("cycle_end", outcome="paused", error=post_plan_drift, lines=0)
+                return
 
             head = await snapshot()
             lines = await diff_stat(snap) if snap else 0
@@ -484,20 +603,52 @@ class OrchestratorController:
                 tokens=budget.budget.cycle_tokens, attempted=0, passed=0,
                 summary=(reflect.final_message[:250] + plan_summary)[:500],
             )
-            self._update_stall_counters(lines, 1, 1)
+            self._update_stall_counters(lines, 0, 0)
+            await self._maybe_pause_on_stall(cycle)
 
-        self.state.phase = "idle"
+        if self.state.phase in ("paused", "stopped", "error"):
+            trace.info(
+                "cycle_end",
+                outcome=outcome,
+                lines=lines,
+                tokens=budget.budget.cycle_tokens,
+                tasks_attempted=tasks_attempted,
+                tasks_passed=tasks_passed,
+                head_sha=(head[:10] if head else None),
+                interrupted_phase=self.state.phase,
+            )
+            return
+
+        self._set_phase("idle", reason="cycle_complete")
         self.state.current_task = None
         self.state.last_outcome = outcome
-        self._persist()
+        trace.info(
+            "cycle_end",
+            outcome=outcome,
+            lines=lines,
+            tokens=budget.budget.cycle_tokens,
+            tasks_attempted=tasks_attempted,
+            tasks_passed=tasks_passed,
+            head_sha=(head[:10] if head else None),
+        )
+
+    def _reset_stall_detectors(self) -> None:
+        """Clear stall history when the human explicitly restarts the loop."""
+        self.state.consecutive_low_change_cycles = 0
+        self.state.consecutive_fail_cycles = 0
+        guardrails.no_progress.reset()
 
     def _update_stall_counters(self, lines: int, tasks_passed: int, tasks_attempted: int) -> None:
-        """Update the diminishing-returns + consecutive-failure counters."""
-        self.state.consecutive_low_change_cycles = (
-            self.state.consecutive_low_change_cycles + 1
-            if lines < settings.stall_min_lines_changed
-            else 0
-        )
+        """Update the diminishing-returns + consecutive-failure counters.
+
+        Low-line cycles only count toward stall when no task completed — a
+        successful execute cycle that only touches backlog.md (a few lines)
+        is real progress and must not trip the guardrail.
+        """
+        if lines < settings.stall_min_lines_changed and tasks_passed == 0:
+            self.state.consecutive_low_change_cycles += 1
+        else:
+            self.state.consecutive_low_change_cycles = 0
         self.state.consecutive_fail_cycles = (
             self.state.consecutive_fail_cycles + 1
             if tasks_passed == 0 and tasks_attempted > 0
@@ -506,32 +657,26 @@ class OrchestratorController:
 
     async def _maybe_pause_on_stall(self, cycle: int) -> None:
         """Auto-pause if the loop is stalled or consistently failing."""
-        if guardrails.no_progress.observe(
-            # feed the diff_stat via the last recorded lines_changed
-            self._last_lines_changed()
-        ) or self.state.consecutive_fail_cycles >= settings.stall_detection_cycles:
+        if (
+            self.state.consecutive_low_change_cycles >= settings.stall_detection_cycles
+            or self.state.consecutive_fail_cycles >= settings.stall_detection_cycles
+        ):
+            reason = (
+                f"stalled: {self.state.consecutive_low_change_cycles} low-change cycles, "
+                f"{self.state.consecutive_fail_cycles} fail cycles"
+            )
+            trace.guardrail(
+                "stall",
+                reason,
+                low_change_cycles=self.state.consecutive_low_change_cycles,
+                fail_cycles=self.state.consecutive_fail_cycles,
+            )
             log.warning(
                 "[cycle %d] stall/consistent-failure detected — pausing for human", cycle
             )
             self.state.running = False
-            self.state.phase = "paused"
-            self.state.last_error = (
-                f"stalled: {self.state.consecutive_low_change_cycles} low-change cycles, "
-                f"{self.state.consecutive_fail_cycles} fail cycles"
-            )
-            self._persist()
-
-    def _last_lines_changed(self) -> int:
-        """Peek the most recent cycle's lines_changed from DB for the no-progress detector."""
-        from ..db import fetch_cycles
-
-        rows = fetch_cycles(limit=1, project_id=self.active_project_id or "")
-        if rows:
-            try:
-                return int(rows[0]["lines_changed"])
-            except (KeyError, ValueError, TypeError):
-                return 0
-        return 0
+            self._set_phase("paused", reason=reason)
+            self.state.last_error = reason
 
     async def _record_cycle(
         self,

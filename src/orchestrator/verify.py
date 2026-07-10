@@ -13,6 +13,7 @@ import shlex
 from dataclasses import dataclass
 
 from ..config import settings
+from . import trace
 
 log = logging.getLogger("solo.verify")
 
@@ -79,4 +80,12 @@ async def run_verify(timeout: float = 600.0) -> VerifyResult:
     rc = proc.returncode if proc.returncode is not None else -1
     ok = rc == 0
     log.info("verify %s", "PASS" if ok else "FAIL")
+    trace.verify_result(
+        ok=ok,
+        returncode=rc,
+        command=settings.verify_command,
+        stdout=stdout,
+        stderr=stderr,
+        truncated=truncated,
+    )
     return VerifyResult(ok=ok, returncode=rc, stdout=stdout, stderr=stderr, truncated=truncated)

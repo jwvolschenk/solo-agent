@@ -196,6 +196,7 @@ def mock_agent_script(tmp_path):
       hang     -> sleeps forever (to test timeout/kill)
       tool     -> emits a correlated bash tool call (running -> completed) plus
                   a read-only tool call with no callID, then text + step_finish
+      huge     -> emits one NDJSON line larger than 64 KiB (stream limit stress)
     """
     script = tmp_path / "mock_agent.py"
     script.write_text(textwrap.dedent("""\
@@ -229,6 +230,14 @@ def mock_agent_script(tmp_path):
             }))
             print(json.dumps({"type": "text", "part": {"type": "text", "text": "DONE: ran tests"}}))
             print(json.dumps({"type": "step_finish", "part": {"reason": "stop", "tokens": {"total": 80, "input": 50, "output": 30}}}))
+            sys.exit(0)
+        if mode == "huge":
+            # single line > default 64 KiB asyncio limit; runner must not crash
+            print(json.dumps({
+                "type": "text",
+                "part": {"type": "text", "text": "x" * 100_000 + "\\nDONE: huge line ok"},
+            }))
+            print(json.dumps({"type": "step_finish", "part": {"reason": "stop", "tokens": {"total": 10, "input": 5, "output": 5}}}))
             sys.exit(0)
         # ok: emit assistant text + a clean stop step_finish with token counts
         print(json.dumps({"type": "text", "part": {"type": "text", "text": "DONE: added a test"}}))

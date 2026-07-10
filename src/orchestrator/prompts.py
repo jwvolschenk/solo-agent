@@ -55,7 +55,8 @@ PHASE: PLAN (cycle {cycle}). Read backlog-candidates.md and decompose every
 unchecked (`- [ ]`) theme into ready one-session tasks in backlog.md.
 
 1. **Decompose**: for each candidate theme, add multiple smaller `- [ ]` tasks to
-   backlog.md. Each must be completable in one session with a testable outcome.
+   backlog.md — one checkbox line per task (NOT `### Task:` headings). Each must
+   be completable in one session with a testable outcome.
 2. **Order**: put the highest-value next step toward GOAL.md first in backlog.md.
 3. **Refine**: each backlog.md task needs a clear acceptance criterion (on the
    line or as a sub-bullet).

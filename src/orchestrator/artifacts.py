@@ -398,6 +398,41 @@ def read_backlog() -> str:
     return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
 
 
+def count_task_headings(content: str) -> int:
+    """Count ``### Task:`` headings (PLAN drift — not executable by the loop)."""
+    return sum(
+        1 for line in content.splitlines() if line.strip().startswith("### Task:")
+    )
+
+
+def backlog_format_drift(content: str | None = None) -> str | None:
+    """Return an error when backlog has work the executor cannot see.
+
+    The loop only understands markdown checkbox tasks (``- [ ]`` / ``- [x]``).
+    When PLAN writes ``### Task:`` headings instead, ``pending_tasks`` stays 0
+    and the controller spins in reflect/plan forever.
+    """
+    from ..state_reader import parse_tasks
+
+    text = content if content is not None else read_backlog()
+    if not text.strip():
+        return None
+    tasks = parse_tasks(text)
+    pending = [
+        t for t in tasks
+        if t.status == "todo" and not is_planner_only_task(t.text)
+    ]
+    if pending:
+        return None
+    heading_count = count_task_headings(text)
+    if heading_count:
+        return (
+            f"backlog format drift: {heading_count} '### Task:' heading(s) but no "
+            f"executable '- [ ]' tasks — PLAN must write checkbox lines, not headings"
+        )
+    return None
+
+
 def read_candidates() -> str:
     p = candidates_path()
     return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""

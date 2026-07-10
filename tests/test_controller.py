@@ -338,3 +338,125 @@ async def test_switch_project_notifies_already_connected_clients(controller_with
         assert {"kind": "transcript_backfill", "events": []} in received
     finally:
         transcript.set_broadcast(saved_broadcast)
+
+
+@pytest.mark.asyncio
+async def test_successful_low_line_cycles_do_not_stall(
+    controller_with_tmp_repo, tmp_target_repo, mock_agent_script, monkeypatch,
+):
+    """Passing execute cycles with small diffs (e.g. backlog checkoffs) must not
+    auto-pause — only cycles that fail to complete work should count."""
+    from src.orchestrator import guardrails
+    from src.orchestrator.runner import AgentResult
+
+    c = controller_with_tmp_repo
+    monkeypatch.setattr(settings, "stall_detection_cycles", 3)
+    monkeypatch.setattr(settings, "stall_min_lines_changed", 5)
+    monkeypatch.setattr(settings, "agent_command", f"{mock_agent_script} {{prompt}}")
+    (tmp_target_repo / "backlog.md").write_text("- [ ] small change task\n")
+
+    async def ok_goal(*_a, **_kw):
+        return AgentResult(
+            ok=True,
+            session_id="solo-ok",
+            final_message="DONE: checked off backlog",
+            tokens_used=10,
+        )
+
+    async def two_lines(_sha):
+        return 2
+
+    monkeypatch.setattr("src.orchestrator.controller.run_goal", ok_goal)
+    monkeypatch.setattr("src.orchestrator.controller.diff_stat", two_lines)
+
+    for _ in range(3):
+        c.state.running = True
+        c.state.consecutive_low_change_cycles = 0
+        await c._run_cycle()
+        assert c.state.phase == "idle"
+        assert c.state.running is True
+        assert c.state.consecutive_low_change_cycles == 0
+
+    # three failed cycles with tiny diffs should stall
+    guardrails.no_progress.reset()
+    c.state.consecutive_low_change_cycles = 0
+    c.state.consecutive_fail_cycles = 0
+    c.state.cycle_number = 0
+
+    async def fail_goal(*_a, **_kw):
+        from src.orchestrator.runner import AgentResult
+
+        return AgentResult(ok=False, session_id="solo-fail", error="nope")
+
+    monkeypatch.setattr("src.orchestrator.controller.run_goal", fail_goal)
+
+    async def two_lines(_sha):
+        return 2
+
+    monkeypatch.setattr("src.orchestrator.controller.diff_stat", two_lines)
+
+    for i in range(3):
+        c.state.running = True
+        await c._run_cycle()
+        if i < 2:
+            assert c.state.phase == "idle"
+            assert c.state.running is True
+        else:
+            assert c.state.phase == "paused"
+            assert c.state.running is False
+            assert "stalled" in (c.state.last_error or "")
+
+
+@pytest.mark.asyncio
+async def test_backlog_format_drift_pauses_instead_of_reflect(
+    controller_with_tmp_repo, tmp_target_repo,
+):
+    """When backlog has ### Task headings but no checkboxes, pause — don't spin."""
+    from src.orchestrator import artifacts
+
+    c = controller_with_tmp_repo
+    (tmp_target_repo / "backlog.md").write_text(
+        "# Backlog\n\n"
+        "### Task: unparseable planner output (priority: high)\n\n"
+        "Description without checkbox.\n",
+        encoding="utf-8",
+    )
+    c.state.running = True
+    c.state.cycle_number = 0
+
+    await c._run_cycle()
+
+    assert c.state.phase == "paused"
+    assert c.state.running is False
+    assert "format drift" in (c.state.last_error or "").lower()
+    assert artifacts.backlog_format_drift() is not None
+
+
+@pytest.mark.asyncio
+async def test_reflect_cycles_trigger_stall_pause(
+    controller_with_tmp_repo, tmp_target_repo, mock_agent_script, monkeypatch,
+):
+    """Reflect/plan cycles with lines=0 must eventually auto-pause on stall."""
+    from src import transcript
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "agent_command", f"{mock_agent_script} {{prompt}}")
+    monkeypatch.setattr(settings, "stall_detection_cycles", 3)
+    monkeypatch.setenv("AGENT_MODE", "ok")
+
+    c = controller_with_tmp_repo
+    (tmp_target_repo / "backlog.md").write_text("# Backlog\n", encoding="utf-8")
+    transcript.clear()
+    c.state.cycle_number = 0
+
+    for i in range(3):
+        c.state.running = True
+        await c._run_cycle()
+        if i < 2:
+            assert c.state.phase == "idle"
+            assert c.state.running is True
+        else:
+            assert c.state.phase == "paused"
+            assert c.state.running is False
+            assert "stalled" in (c.state.last_error or "")
+

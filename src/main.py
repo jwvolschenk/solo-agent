@@ -26,11 +26,13 @@ from .db import init_db
 from .ws import manager
 from .watcher import watcher
 from .orchestrator.controller import controller
+from .orchestrator.trace import setup as setup_orch_trace
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
+setup_orch_trace()
 log = logging.getLogger("solo.main")
 
 # Wire the collector's broadcast to the WebSocket manager.

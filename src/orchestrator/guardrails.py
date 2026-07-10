@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..config import settings
+from . import trace
 
 log = logging.getLogger("solo.guardrails")
 
@@ -47,6 +48,7 @@ class LoopDetector:
             prev = list(self._hashes)[-self.window * 2:-self.window]
             if recent == prev:
                 log.warning("LOOP DETECTED: action sequence repeating")
+                trace.guardrail("loop", "action sequence repeating")
                 return True
         return False
 
@@ -71,6 +73,11 @@ class NoProgressDetector:
                 settings.stall_detection_cycles,
                 settings.stall_min_lines_changed,
             )
+            trace.guardrail(
+                "no_progress",
+                f"{settings.stall_detection_cycles} cycles below line threshold",
+                min_lines=settings.stall_min_lines_changed,
+            )
             return True
         return False
 
@@ -89,6 +96,7 @@ class KillSwitch:
         self._stop = True
         self.reason = reason
         log.warning("KILL SWITCH ENGAGED: %s", reason)
+        trace.guardrail("kill_switch", reason)
 
     @property
     def engaged(self) -> bool:

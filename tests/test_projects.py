@@ -162,6 +162,37 @@ def test_relocate_stale_seeds_moves_planner_lines(tmp_settings):
     assert "orchestrator seed" in seeds[0]
 
 
+def test_backlog_format_drift_detects_task_headings(tmp_settings):
+    from src.orchestrator import artifacts
+
+    backlog = artifacts.backlog_path()
+    backlog.parent.mkdir(parents=True, exist_ok=True)
+    backlog.write_text(
+        "# Backlog\n\n"
+        "### Task: do the thing (priority: high)\n\n"
+        "Long description without a checkbox.\n",
+        encoding="utf-8",
+    )
+    msg = artifacts.backlog_format_drift()
+    assert msg is not None
+    assert "### Task:" in msg
+    assert artifacts.count_task_headings(backlog.read_text()) == 1
+
+
+def test_backlog_format_drift_ignores_valid_checkboxes(tmp_settings):
+    from src.orchestrator import artifacts
+
+    backlog = artifacts.backlog_path()
+    backlog.parent.mkdir(parents=True, exist_ok=True)
+    backlog.write_text(
+        "# Backlog\n\n"
+        "- [ ] real executable task\n"
+        "### Task: stale heading from a bad plan cycle\n",
+        encoding="utf-8",
+    )
+    assert artifacts.backlog_format_drift() is None
+
+
 def test_compact_reflections_archives_old_entries(tmp_settings, monkeypatch):
     from src.orchestrator import artifacts
 

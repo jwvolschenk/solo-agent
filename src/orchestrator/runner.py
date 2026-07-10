@@ -28,6 +28,7 @@ from ..config import settings
 from ..models import TranscriptEvent
 from .. import transcript
 from . import budget
+from . import trace
 
 log = logging.getLogger("solo.runner")
 
@@ -100,6 +101,61 @@ def build_command(prompt: str, session_id: str, title: str) -> list[str]:
     return [substitute(arg) for arg in shlex.split(settings.agent_command)]
 
 
+async def _read_stdout_line(stream: asyncio.StreamReader) -> bytes:
+    """Read one NDJSON line from the agent, tolerating oversized events.
+
+    asyncio's default StreamReader limit is 64 KiB. OpenCode occasionally emits
+    a single JSON line larger than that (e.g. huge tool output), which raises
+    ValueError: "Separator is found, but chunk is longer than limit". We bump
+    the subprocess limit via settings.agent_stdout_line_limit; if a line still
+    exceeds it, truncate/drain rather than crash the orchestrator loop.
+    """
+    try:
+        return await stream.readline()
+    except ValueError as e:
+        msg = str(e).lower()
+        if "chunk is longer than limit" not in msg and "chunk exceed" not in msg:
+            raise
+        limit = settings.agent_stdout_line_limit
+        log.warning(
+            "agent stdout line exceeded %d byte StreamReader limit — truncating",
+            limit,
+        )
+        trace.warning("stdout_oversized_line", limit=limit, detail=str(e))
+        buf = bytearray()
+        while len(buf) < limit:
+            chunk = await stream.read(min(65536, limit - len(buf)))
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if b"\n" in chunk:
+                break
+        # Still no newline within limit — drain rest of the line to resync.
+        if b"\n" not in buf:
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk or b"\n" in chunk:
+                    break
+        line = bytes(buf)
+        if line and not line.endswith(b"\n"):
+            line += b"\n"
+        return line
+
+
+async def _read_stderr_line(stream: asyncio.StreamReader) -> bytes:
+    """Like _read_stdout_line but for stderr (same limit semantics)."""
+    try:
+        return await stream.readline()
+    except ValueError:
+        limit = settings.agent_stdout_line_limit
+        log.warning("agent stderr line exceeded %d byte limit — draining", limit)
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk or b"\n" in chunk:
+                return b""
+        return b""  # unreachable
+
+
 async def run_goal(
     prompt: str,
     *,
@@ -130,14 +186,22 @@ async def run_goal(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=settings.agent_stdout_line_limit,
             preexec_fn=os.setsid,  # new process group for clean kill
         )
     except FileNotFoundError as e:
         log.error("agent binary not found: %s", e)
+        trace.agent_result(
+            ok=False,
+            session_id=session_id,
+            agent_phase=title,
+            error=f"agent binary not found: {e}",
+        )
         return AgentResult(ok=False, session_id=session_id, error=f"agent binary not found: {e}")
 
     result = AgentResult(ok=False, session_id=session_id)
     stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
     stopped = False
 
     async def _read_stdout() -> None:
@@ -145,7 +209,7 @@ async def run_goal(
         nonlocal stopped
         assert proc.stdout is not None
         while True:
-            line = await proc.stdout.readline()
+            line = await _read_stdout_line(proc.stdout)
             if not line:
                 break  # EOF — process closed stdout
             decoded = line.decode("utf-8", errors="replace").rstrip()
@@ -159,9 +223,10 @@ async def run_goal(
         """Drain stderr (keep the pipe from blocking)."""
         assert proc.stderr is not None
         while True:
-            line = await proc.stderr.readline()
+            line = await _read_stderr_line(proc.stderr)
             if not line:
                 break
+            stderr_lines.append(line.decode("utf-8", errors="replace").rstrip())
 
     try:
         # run both readers concurrently with a hard timeout
@@ -176,10 +241,21 @@ async def run_goal(
         result.timed_out = True
         result.error = f"timed out after {timeout}s"
         result.stdout = "\n".join(stdout_lines)
+        result.stderr = "\n".join(stderr_lines)
+        trace.agent_result(
+            ok=False,
+            session_id=session_id,
+            agent_phase=title,
+            timed_out=True,
+            error=result.error,
+            event_count=len(stdout_lines),
+        )
+        trace.output_snippet("agent_stdout", result.stdout)
+        trace.output_snippet("agent_stderr", result.stderr)
         return result
 
     result.stdout = "\n".join(stdout_lines)
-    result.stderr = ""
+    result.stderr = "\n".join(stderr_lines)
 
     # parse the full event stream from collected stdout for the final result
     result.events, result.final_message, result.tokens_used, parse_stopped = _parse_event_stream(result.stdout)
@@ -209,6 +285,19 @@ async def run_goal(
             result.error = "session error"
     elif not result.ok:
         result.error = "agent did not signal completion (no 'stop' step_finish, no final message)"
+    trace.agent_result(
+        ok=result.ok,
+        session_id=session_id,
+        agent_phase=title,
+        tokens=result.tokens_used,
+        timed_out=result.timed_out,
+        error=result.error,
+        final_message=result.final_message,
+        event_count=len(result.events),
+    )
+    if not result.ok:
+        trace.output_snippet("agent_stdout", result.stdout)
+        trace.output_snippet("agent_stderr", result.stderr)
     log.info(
         "agent finished: ok=%s stopped=%s tokens=%d events=%d final=%r",
         result.ok, stopped, result.tokens_used, len(result.events), result.final_message[:80],

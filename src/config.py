@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     # --- Server ----------------------------------------------------------------
     host: str = "0.0.0.0"
     port: int = 8090
+    log_level: str = "INFO"  # DEBUG for verbose orchestrator subprocess snippets
+    orch_trace_file: Path = REPO_ROOT / "data" / "orch-trace.log"
 
     # --- llama-server (the thing being monitored) ------------------------------
     llama_server_url: str = "http://localhost:8080"
@@ -91,6 +93,10 @@ class Settings(BaseSettings):
     cycle_timeout_sec: float = 7200.0  # 2h hard cap per full cycle
     max_trials_per_task: int = 3  # max reflect-retry attempts per backlog task
     max_steps_per_goal: int = 200  # soft cap on observed tool calls per goal
+    # OpenCode NDJSON lines can exceed asyncio's default 64 KiB StreamReader
+    # limit when tool output is embedded in a single event. Raise this if you
+    # see "Separator is found, but chunk is longer than limit".
+    agent_stdout_line_limit: int = 4 * 1024 * 1024  # 4 MiB
 
     # No token budgets — this runs against a local model, so cost is irrelevant
     # and the loop should churn 24/7. We still COUNT tokens for display, but they
